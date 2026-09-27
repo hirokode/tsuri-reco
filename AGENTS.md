@@ -84,7 +84,7 @@
 
 - ID は UUID。削除は論理削除（deleted=true）
 - tide_events・photo_ids・icon_photo・hits は JSON 文字列
-- hits は「釣れた回」[{at, count}]（時刻順）。2回以上のときだけ入れ、caught_at＝最初の回・count＝合計にそろえる（GAS 側で整える）
+- hits は「釣れた回」[{at, count, photos}]（時刻順・写真は1回5枚まで）。2回以上のときだけ入れ、caught_at＝最初の回・count＝合計・photo_ids＝各回の写真をつなげたもの にそろえる（GAS 側で整える）
 
 ## このアプリ固有のルール
 

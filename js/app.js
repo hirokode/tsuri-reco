@@ -724,9 +724,19 @@ function tideCardHtml(levels) {
     <p class="muted small">${many ? '' : `釣った時刻 ${esc(jstTime(new Date(levels[0].hit.at).getTime()))}・`}${esc(first.station.name)}（約${Math.round(first.km)}km）の予測です。出典：気象庁「潮位表」。川の上流などでは時刻が遅れることがあります。</p>`;
 }
 
-// 釣れた回（時刻と匹数）。hits の無い釣果は「日時に匹数ぶん」の1回とみなす
+// 釣れた回（時刻・匹数・写真）。hits の無い釣果は「日時に匹数ぶん」の1回とみなす。
+// 回ごとの写真が無い古い釣果は、写真をすべて最初の回に付ける
 function hitsOf(c) {
-  return Array.isArray(c.hits) && c.hits.length ? c.hits : [{ at: c.caught_at, count: c.count || 1 }];
+  const photos = c.photo_ids || [];
+  if (!Array.isArray(c.hits) || !c.hits.length) return [{ at: c.caught_at, count: c.count || 1, photos }];
+  const perHit = c.hits.some(h => Array.isArray(h.photos));
+  return c.hits.map((h, i) => ({ ...h, photos: perHit ? (h.photos || []) : (i === 0 ? photos : []) }));
+}
+
+// アップロードした写真の ID を、回ごとの枚数（counts）に合わせて各回に分ける
+function withHitPhotos(hits, ids, counts) {
+  let k = 0;
+  return hits.map((h, i) => ({ ...h, photos: ids.slice(k, (k += counts[i] || 0)) }));
 }
 
 // 「9:40」、日付が違えば「9/28 0:40」
@@ -898,8 +908,9 @@ async function sendPending(albumId, p) {
   notify(albumId);
   try {
     const photoIds = await uploadPhotos(session.token, p._photos, p._uploaded);
-    const { catch_id, _pending, _error, _photos, _uploaded, _previews, ...fields } = p;
-    const res = await api('saveCatch', { token: session.token, catch: { ...fields, photo_ids: photoIds } });
+    const { catch_id, _pending, _error, _photos, _uploaded, _previews, _photoCounts, ...fields } = p;
+    const hits = withHitPhotos(fields.hits, photoIds, _photoCounts);
+    const res = await api('saveCatch', { token: session.token, catch: { ...fields, hits, photo_ids: photoIds } });
     st.pending = st.pending.filter(x => x !== p);
     (p._previews || []).forEach(u => URL.revokeObjectURL(u));
     if (st.data) {
@@ -947,14 +958,11 @@ function viewForm(albumId, catchId, params) {
   if (orig) loc = { lat: orig.lat, lng: orig.lng };
   else if (params.get('lat') && params.get('lng')) loc = parseLatLng(`${params.get('lat')},${params.get('lng')}`);
   const lastCatch = catchesOf(albumId).find(c => isFinite(c.lat));
-  let photos = orig ? (orig.photo_ids || []).map(p => ({ kind: 'existing', f: p.f, t: p.t })) : [];
-  // 日時：'photo'＝写真の撮影日時を使う（変更不可・既定）、'manual'＝自分で入力
+  // 日時：'photo'＝写真の撮影日時を使う（既定。写真のある回は変更不可）、'manual'＝自分で入力
   let dateMode = 'photo';
-  // 釣れた回（時刻と匹数）。時刻順に並べ、最初の回＝釣果の日時、合計＝匹数。
-  // photo が付いた回が「写真から」の対象（最初は1回目）。base は写真に撮影日時が無いときに使う日時
-  const hits = (orig ? hitsOf(orig) : [{ at: new Date().toISOString(), count: 1 }])
-    .map((h, i) => ({ at: toLocalInput(new Date(h.at)), count: h.count, photo: i === 0 }));
-  const photoBase = hits[0].at;
+  // 釣れた回（時刻・匹数・写真5枚まで）。時刻順に並べ、最初の回＝釣果の日時、合計＝匹数
+  const hits = (orig ? hitsOf(orig) : [{ at: new Date().toISOString(), count: 1, photos: [] }])
+    .map(h => ({ at: toLocalInput(new Date(h.at)), count: h.count, photos: (h.photos || []).map(p => ({ kind: 'existing', f: p.f, t: p.t })) }));
   let dirty = false;
 
   const members = st.data.members;
@@ -967,16 +975,7 @@ function viewForm(albumId, catchId, params) {
     <main class="page">
       <form id="catch-form" class="form" novalidate>
         <section class="card">
-          <h2>写真 <span class="muted small">（${MAX_PHOTOS}枚まで）</span></h2>
-          <div class="photo-grid" id="photo-grid"></div>
-          <label class="btn block" id="photo-add">${icon('camera')} 写真を撮る・選ぶ
-            <input type="file" accept="image/*" multiple hidden id="photo-input">
-          </label>
-          <p class="muted small">写真の位置情報は使わず、保存もしません。</p>
-        </section>
-
-        <section class="card">
-          <h2>釣れた日時・匹数 <span class="req">必須</span></h2>
+          <h2>釣れた日時・匹数・写真 <span class="req">必須</span></h2>
           <div class="segmented" role="radiogroup" aria-label="日時の入れ方">
             <label><input type="radio" name="date_mode" value="photo" checked><span>写真から</span></label>
             <label><input type="radio" name="date_mode" value="manual"><span>自分で入力</span></label>
@@ -984,7 +983,7 @@ function viewForm(albumId, catchId, params) {
           <div id="hits" class="hits"></div>
           <p class="muted small" id="date-hint"></p>
           <button class="btn block" type="button" id="hit-add">${icon('plus')} 釣れた回を追加</button>
-          <p class="muted small">時間をあけて釣れたときは回を分けて入れてください。時刻の順に自動で並べ替えます。</p>
+          <p class="muted small">時間をあけて釣れたときは回を分けて入れてください。時刻の順に自動で並べ替えます。写真は1回につき${MAX_PHOTOS}枚まで。写真の位置情報は使わず、保存もしません。</p>
         </section>
 
         <section class="card">
@@ -1025,8 +1024,6 @@ function viewForm(albumId, catchId, params) {
     </main>`;
 
   const form = document.getElementById('catch-form');
-  const grid = document.getElementById('photo-grid');
-  const input = document.getElementById('photo-input');
   const coord = form.elements.coord;
   const gmaps = document.getElementById('gmaps-link');
   const created = []; // この画面で作ったプレビューURL（画面を閉じたら解放）
@@ -1036,7 +1033,9 @@ function viewForm(albumId, catchId, params) {
   // 釣れた回の表示と入力
   const hitsEl = document.getElementById('hits');
   const dateHint = document.getElementById('date-hint');
-  const photoDate = () => (photos.find(p => p.kind === 'new' && p.takenAt) || {}).takenAt || null;
+  // その回の写真の撮影日時（いちばん早いもの）。撮影日時の無い写真だけなら null
+  const photoTime = h => h.photos.filter(p => p.kind === 'new' && p.takenAt).map(p => p.takenAt).sort((a, b) => a - b)[0] || null;
+  const locked = h => dateMode === 'photo' && !!photoTime(h);
   // いちばん早い回（並べ替え前でも）
   const firstDate = () => new Date(hits.reduce((min, h) => (h.at && h.at < min ? h.at : min), hits[0].at));
 
@@ -1044,9 +1043,16 @@ function viewForm(albumId, catchId, params) {
     const many = hits.length > 1;
     hitsEl.innerHTML = hits.map((h, i) => `<div class="hit-row${moved[i] ? ' moved' : ''}">
       <span class="hit-no">${many ? `${i + 1}回目` : ''}</span>
-      <input type="datetime-local" class="hit-at" data-i="${i}" value="${esc(h.at)}" aria-label="${i + 1}回目の時刻" ${h.photo && dateMode === 'photo' ? 'disabled' : ''}>
+      <input type="datetime-local" class="hit-at" data-i="${i}" value="${esc(h.at)}" aria-label="${i + 1}回目の時刻" ${locked(h) ? 'disabled' : ''}>
       <label class="hit-count"><input type="number" inputmode="numeric" min="1" step="1" class="hit-n" data-i="${i}" value="${esc(h.count)}" aria-label="${i + 1}回目の匹数">匹</label>
       ${many ? `<button type="button" class="icon-btn hit-del" data-del-hit="${i}" aria-label="${i + 1}回目を消す">${icon('x')}</button>` : ''}
+      <div class="hit-photos">
+        ${h.photos.map((p, j) => `<div class="photo-item">
+          ${p.kind === 'existing' ? photoImg(p.t, 400) : `<img src="${p.previewUrl}" alt="">`}
+          <button type="button" class="photo-del" data-del-photo="${i}:${j}" aria-label="写真を外す">${icon('x')}</button></div>`).join('')}
+        ${h.photos.length < MAX_PHOTOS ? `<label class="photo-add-tile" aria-label="${i + 1}回目の写真を撮る・選ぶ">${icon('camera')}<span>写真</span>
+          <input type="file" accept="image/*" multiple hidden data-photo-input="${i}"></label>` : ''}
+      </div>
     </div>`).join('') + (many ? `<p class="hit-total">合計 <b>${hits.reduce((n, h) => n + (Number(h.count) || 0), 0)}</b>匹</p>` : '');
   }
 
@@ -1077,6 +1083,7 @@ function viewForm(albumId, catchId, params) {
   });
 
   hitsEl.addEventListener('change', e => {
+    if (e.target.dataset.photoInput !== undefined) return addPhotos(hits[Number(e.target.dataset.photoInput)], e.target);
     readHits();
     if (e.target.classList.contains('hit-at')) {
       needSort = true;
@@ -1087,20 +1094,55 @@ function viewForm(albumId, catchId, params) {
     }
   });
   hitsEl.addEventListener('click', e => {
+    const dp = e.target.closest('[data-del-photo]');
+    if (dp) {
+      readHits();
+      const [i, j] = dp.dataset.delPhoto.split(':').map(Number);
+      hits[i].photos.splice(j, 1);
+      dirty = true;
+      syncDate();
+      return;
+    }
     const d = e.target.closest('[data-del-hit]');
     if (!d) return;
+    const h = hits[Number(d.dataset.delHit)];
+    if (h.photos.length && !confirm(`${Number(d.dataset.delHit) + 1}回目を写真ごと消しますか？`)) return;
     readHits();
-    const [removed] = hits.splice(Number(d.dataset.delHit), 1);
-    if (removed.photo) hits[0].photo = true; // 写真の対象は残った最初の回に移す
+    hits.splice(hits.indexOf(h), 1);
     dirty = true;
-    drawHits();
+    drawHits(); // 消した回の入力欄を読み直さないよう、先に描き直す
     syncDate();
   });
+
+  // 回に写真を足す（1回につき MAX_PHOTOS 枚まで）。「写真から」なら撮影日時をその回の時刻にする
+  async function addPhotos(hit, inputEl) {
+    const files = Array.from(inputEl.files || []);
+    inputEl.value = '';
+    readHits();
+    const room = MAX_PHOTOS - hit.photos.length;
+    if (files.length > room) toast(`写真は1回につき${MAX_PHOTOS}枚までです。${room}枚だけ追加します`);
+    const hadTime = photoTime(hit);
+    busy(true, '写真を準備しています…');
+    try {
+      for (const file of files.slice(0, room)) {
+        const p = await preparePhoto(file);
+        created.push(p.previewUrl);
+        hit.photos.push({ kind: 'new', ...p });
+      }
+      dirty = true;
+    } catch (err) {
+      toast(err.message, 4000);
+    } finally {
+      busy(false);
+      if (dateMode === 'photo' && photoTime(hit) && +photoTime(hit) !== +hadTime) toast('写真の撮影日時を入れました');
+      syncDate();
+    }
+  }
   document.getElementById('hit-add').addEventListener('click', () => {
     readHits();
     sortHits();
     needSort = false;
-    hits.push({ at: hits[hits.length - 1].at, count: 1, photo: false });
+    hits.push({ at: hits[hits.length - 1].at, count: 1, photos: [] });
     dirty = true;
     drawHits();
     const inputs = hitsEl.querySelectorAll('.hit-at');
@@ -1156,15 +1198,15 @@ function viewForm(albumId, catchId, params) {
       syncTide();
       return;
     }
-    const d = photoDate();
-    hits.find(h => h.photo).at = d ? toLocalInput(d) : photoBase;
+    hits.forEach(h => { const t = photoTime(h); if (t) h.at = toLocalInput(t); });
     sortHits();
     drawHits();
     moved = [];
-    const fallback = editing ? '保存済みの日時' : '今の日時';
-    dateHint.textContent = d ? `写真の撮影日時を使っています${hits.length > 1 ? '（ロックされている回）' : ''}。`
-      : photos.some(p => p.kind === 'new') ? `写真に撮影日時が無いため、${fallback}を使います。`
-      : `写真を選ぶと撮影日時が入ります（それまでは${fallback}）。`;
+    const noTime = hits.some(h => h.photos.some(p => p.kind === 'new') && !photoTime(h));
+    dateHint.textContent = hits.some(photoTime)
+      ? `写真の撮影日時を、その回の時刻に入れています（写真のある回の時刻は変えられません）。${noTime ? '撮影日時の無い写真の回は、時刻を自分で入れてください。' : ''}`
+      : noTime ? '写真に撮影日時が無いため、時刻を自分で入れてください。'
+      : '写真を選ぶと、その回の時刻に撮影日時が入ります。';
     syncTide();
   }
   form.querySelectorAll('input[name="date_mode"]').forEach(r => r.addEventListener('change', () => {
@@ -1172,44 +1214,6 @@ function viewForm(albumId, catchId, params) {
     syncDate();
     if (dateMode === 'manual') hitsEl.querySelector('.hit-at').focus();
   }));
-
-  function drawPhotos() {
-    grid.innerHTML = photos.map((p, i) => `<div class="photo-item">
-      ${p.kind === 'existing' ? photoImg(p.t, 400) : `<img src="${p.previewUrl}" alt="">`}
-      <button type="button" class="photo-del" data-del="${i}" aria-label="写真を外す">${icon('x')}</button></div>`).join('');
-    document.getElementById('photo-add').hidden = photos.length >= MAX_PHOTOS;
-  }
-  grid.addEventListener('click', e => {
-    const d = e.target.closest('[data-del]');
-    if (!d) return;
-    photos.splice(Number(d.dataset.del), 1);
-    dirty = true;
-    drawPhotos();
-    syncDate();
-  });
-  input.addEventListener('change', async () => {
-    const files = Array.from(input.files || []);
-    input.value = '';
-    const room = MAX_PHOTOS - photos.length;
-    if (files.length > room) toast(`写真は${MAX_PHOTOS}枚までです。${room}枚だけ追加します`);
-    busy(true, '写真を準備しています…');
-    try {
-      for (const file of files.slice(0, room)) {
-        const p = await preparePhoto(file);
-        created.push(p.previewUrl);
-        if (dateMode === 'photo' && p.takenAt && !photoDate()) toast('写真の撮影日時を入れました');
-        photos.push({ kind: 'new', ...p });
-      }
-      dirty = true;
-    } catch (e) {
-      toast(e.message, 4000);
-    } finally {
-      busy(false);
-      drawPhotos();
-      syncDate();
-    }
-  });
-  drawPhotos();
   syncDate();
 
   // 位置
@@ -1289,6 +1293,8 @@ function viewForm(albumId, catchId, params) {
     if (!loc) return toast('位置を指定してください（地図をタップ・現在地・緯度経度）');
     if (!f.species.value.trim()) return toast('魚種を入力してください');
     const count = hits.reduce((n, h) => n + Number(h.count), 0);
+    const photos = hits.flatMap(h => h.photos); // 全部の写真（回の順）。送ったあと回ごとに分け直す
+    const photoCounts = hits.map(h => h.photos.length);
 
     const fields = {
       caught_at: toLocalIso(caught),
@@ -1316,7 +1322,8 @@ function viewForm(albumId, catchId, params) {
         weight_g: fields.weight_g === '' ? null : fields.weight_g,
         photo_ids: [],
         _pending: 'sending',
-        _photos: photos.slice(),
+        _photos: photos,
+        _photoCounts: photoCounts,
         _uploaded: [],
         _previews: photos.filter(x => x.kind === 'new').map(x => x.previewUrl)
       };
@@ -1331,7 +1338,7 @@ function viewForm(albumId, catchId, params) {
     try {
       const photoIds = await uploadPhotos(session.token, photos, null);
       busy(true, '保存しています…');
-      const payload = { token: session.token, catch: { ...fields, catch_id: catchId, photo_ids: photoIds }, base_updated_at: orig.updated_at };
+      const payload = { token: session.token, catch: { ...fields, catch_id: catchId, hits: withHitPhotos(fields.hits, photoIds, photoCounts), photo_ids: photoIds }, base_updated_at: orig.updated_at };
       let res;
       try {
         res = await api('saveCatch', payload);
