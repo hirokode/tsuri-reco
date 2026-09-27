@@ -80,10 +80,11 @@
 |---|---|
 | albums | album_id, name, created_at, drive_folder_id, icon_photo |
 | members | member_id, album_id, display_name, token, joined_at |
-| catches | catch_id, album_id, caught_at, lat, lng, place_name, species, size_cm, weight_g, count, angler_member_id, tide_name, tide_events, method, bait, memo, photo_ids, created_by, created_at, updated_by, updated_at, deleted |
+| catches | catch_id, album_id, caught_at, lat, lng, place_name, species, size_cm, weight_g, count, angler_member_id, tide_name, tide_events, method, bait, memo, photo_ids, created_by, created_at, updated_by, updated_at, deleted, hits |
 
 - ID は UUID。削除は論理削除（deleted=true）
-- tide_events・photo_ids・icon_photo は JSON 文字列
+- tide_events・photo_ids・icon_photo・hits は JSON 文字列
+- hits は「釣れた回」[{at, count}]（時刻順）。2回以上のときだけ入れ、caught_at＝最初の回・count＝合計にそろえる（GAS 側で整える）
 
 ## このアプリ固有のルール
 

@@ -707,13 +707,34 @@ function tideNowText(r, t) {
   return { level: `約${r.level}cm${r.trend ? '・' + r.trend : ''}`, since };
 }
 
-function tideCardHtml(r, t) {
-  const now = tideNowText(r, t);
-  const list = type => r.events.filter(e => e.type === type).map(e => `${jstTime(e.ms)}（${e.h}cm）`).join('　') || 'なし';
+// levels：釣れた回ごとの [{ hit, r }]（r＝その時刻の潮位）。満干潮の一覧は最初の回の日のもの
+function tideCardHtml(levels) {
+  const first = levels[0].r;
+  const list = type => first.events.filter(e => e.type === type).map(e => `${jstTime(e.ms)}（${e.h}cm）`).join('　') || 'なし';
+  const many = levels.length > 1;
+  const nowLines = levels.map(({ hit, r }) => {
+    if (!r || r.level == null) return '';
+    const now = tideNowText(r, new Date(hit.at).getTime());
+    const head = many ? `<span class="tide-hit">${esc(jstTime(new Date(hit.at).getTime()))}（${esc(hit.count)}匹）</span>` : '';
+    return `<p class="tide-now">${head}<b>${esc(now.level)}</b> <span class="muted small">${esc(now.since)}</span></p>`;
+  }).join('');
   return `<h2>潮位 <span class="muted small">（予測）</span></h2>
-    <p class="tide-now"><b>${esc(now.level)}</b> <span class="muted small">${esc(now.since)}</span></p>
+    ${nowLines}
     <dl class="fields"><dt>満潮</dt><dd>${esc(list('満潮'))}</dd><dt>干潮</dt><dd>${esc(list('干潮'))}</dd></dl>
-    <p class="muted small">釣った時刻 ${esc(jstTime(t))}・${esc(r.station.name)}（約${Math.round(r.km)}km）の予測です。出典：気象庁「潮位表」。川の上流などでは時刻が遅れることがあります。</p>`;
+    <p class="muted small">${many ? '' : `釣った時刻 ${esc(jstTime(new Date(levels[0].hit.at).getTime()))}・`}${esc(first.station.name)}（約${Math.round(first.km)}km）の予測です。出典：気象庁「潮位表」。川の上流などでは時刻が遅れることがあります。</p>`;
+}
+
+// 釣れた回（時刻と匹数）。hits の無い釣果は「日時に匹数ぶん」の1回とみなす
+function hitsOf(c) {
+  return Array.isArray(c.hits) && c.hits.length ? c.hits : [{ at: c.caught_at, count: c.count || 1 }];
+}
+
+// 「9:40」、日付が違えば「9/28 0:40」
+function fmtHitTime(iso, baseIso) {
+  const d = new Date(iso);
+  const b = new Date(baseIso);
+  const hm = `${d.getHours()}:${pad(d.getMinutes())}`;
+  return d.toDateString() === b.toDateString() ? hm : `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
 }
 
 function catchSummary(c) {
@@ -732,7 +753,7 @@ function catchCard(albumId, c) {
     <div class="catch-body">
       <h3>${esc(c.species)} <span class="size">${esc(catchSummary(c))}</span></h3>
       <p class="muted">${esc(c.place_name || '場所名なし')}</p>
-      <p class="muted small">${esc(fmtDateTime(c.caught_at))}・${esc(memberName(albumId, c.angler_member_id))}</p>
+      <p class="muted small">${esc(fmtDateTime(c.caught_at))}${hitsOf(c).length > 1 ? '〜' + esc(fmtHitTime(hitsOf(c).at(-1).at, c.caught_at)) : ''}・${esc(memberName(albumId, c.angler_member_id))}</p>
       ${status}
       ${c._pending === 'error' ? `<p class="small error-text">${esc(c._error || '')}</p>
         <div class="row"><button class="btn small" data-retry="${esc(c.catch_id)}">再送する</button>
@@ -929,7 +950,11 @@ function viewForm(albumId, catchId, params) {
   let photos = orig ? (orig.photo_ids || []).map(p => ({ kind: 'existing', f: p.f, t: p.t })) : [];
   // 日時：'photo'＝写真の撮影日時を使う（変更不可・既定）、'manual'＝自分で入力
   let dateMode = 'photo';
-  const baseDate = orig ? new Date(orig.caught_at) : new Date(); // 写真に撮影日時が無いときに使う日時
+  // 釣れた回（時刻と匹数）。時刻順に並べ、最初の回＝釣果の日時、合計＝匹数。
+  // photo が付いた回が「写真から」の対象（最初は1回目）。base は写真に撮影日時が無いときに使う日時
+  const hits = (orig ? hitsOf(orig) : [{ at: new Date().toISOString(), count: 1 }])
+    .map((h, i) => ({ at: toLocalInput(new Date(h.at)), count: h.count, photo: i === 0 }));
+  const photoBase = hits[0].at;
   let dirty = false;
 
   const members = st.data.members;
@@ -951,13 +976,15 @@ function viewForm(albumId, catchId, params) {
         </section>
 
         <section class="card">
-          <h2>日時 <span class="req">必須</span></h2>
+          <h2>釣れた日時・匹数 <span class="req">必須</span></h2>
           <div class="segmented" role="radiogroup" aria-label="日時の入れ方">
             <label><input type="radio" name="date_mode" value="photo" checked><span>写真から</span></label>
             <label><input type="radio" name="date_mode" value="manual"><span>自分で入力</span></label>
           </div>
-          <input type="datetime-local" name="caught_at" required aria-label="日時" value="${esc(toLocalInput(baseDate))}">
+          <div id="hits" class="hits"></div>
           <p class="muted small" id="date-hint"></p>
+          <button class="btn block" type="button" id="hit-add">${icon('plus')} 釣れた回を追加</button>
+          <p class="muted small">時間をあけて釣れたときは回を分けて入れてください。時刻の順に自動で並べ替えます。</p>
         </section>
 
         <section class="card">
@@ -975,10 +1002,9 @@ function viewForm(albumId, catchId, params) {
 
         <section class="card">
           <label>魚種 <span class="req">必須</span><input name="species" required maxlength="50" value="${esc(v.species)}" placeholder="例：アジ"></label>
-          <div class="grid3">
+          <div class="grid2">
             <label>サイズ(cm)<input name="size_cm" type="number" inputmode="decimal" min="0" step="0.1" value="${esc(v.size_cm ?? '')}"></label>
             <label>重さ(g)<input name="weight_g" type="number" inputmode="decimal" min="0" step="1" value="${esc(v.weight_g ?? '')}"></label>
-            <label>匹数 <span class="req">必須</span><input name="count" type="number" inputmode="numeric" min="1" step="1" required value="${esc(v.count ?? 1)}"></label>
           </div>
           <label>釣った人 <span class="req">必須</span>
             <select name="angler_member_id">${members.map(m => `<option value="${esc(m.member_id)}" ${m.member_id === anglerId ? 'selected' : ''}>${esc(m.display_name || '（未参加）')}</option>`).join('')}</select>
@@ -1007,10 +1033,79 @@ function viewForm(albumId, catchId, params) {
 
   form.addEventListener('input', () => { dirty = true; });
 
-  // 日時の表示を今の入れ方に合わせる
-  const dateInput = form.elements.caught_at;
+  // 釣れた回の表示と入力
+  const hitsEl = document.getElementById('hits');
   const dateHint = document.getElementById('date-hint');
   const photoDate = () => (photos.find(p => p.kind === 'new' && p.takenAt) || {}).takenAt || null;
+  // いちばん早い回（並べ替え前でも）
+  const firstDate = () => new Date(hits.reduce((min, h) => (h.at && h.at < min ? h.at : min), hits[0].at));
+
+  function drawHits() {
+    const many = hits.length > 1;
+    hitsEl.innerHTML = hits.map((h, i) => `<div class="hit-row${moved[i] ? ' moved' : ''}">
+      <span class="hit-no">${many ? `${i + 1}回目` : ''}</span>
+      <input type="datetime-local" class="hit-at" data-i="${i}" value="${esc(h.at)}" aria-label="${i + 1}回目の時刻" ${h.photo && dateMode === 'photo' ? 'disabled' : ''}>
+      <label class="hit-count"><input type="number" inputmode="numeric" min="1" step="1" class="hit-n" data-i="${i}" value="${esc(h.count)}" aria-label="${i + 1}回目の匹数">匹</label>
+      ${many ? `<button type="button" class="icon-btn hit-del" data-del-hit="${i}" aria-label="${i + 1}回目を消す">${icon('x')}</button>` : ''}
+    </div>`).join('') + (many ? `<p class="hit-total">合計 <b>${hits.reduce((n, h) => n + (Number(h.count) || 0), 0)}</b>匹</p>` : '');
+  }
+
+  // 入力欄の今の値を取り込む（描き直す前に。確定前の入力を消さないように）
+  function readHits() {
+    hitsEl.querySelectorAll('.hit-at').forEach(el => { if (el.value) hits[Number(el.dataset.i)].at = el.value; });
+    hitsEl.querySelectorAll('.hit-n').forEach(el => { hits[Number(el.dataset.i)].count = el.value; });
+  }
+
+  // 時刻の順に並べる。並びが変わったら知らせて、動いた回を光らせる
+  let moved = [];
+  function sortHits() {
+    const before = hits.slice();
+    hits.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+    moved = hits.map((h, i) => before[i] !== h);
+    if (moved.some(Boolean)) toast('時刻の順に並べ替えました');
+  }
+
+  // 並べ替えは、時刻・匹数の欄から離れたとき（同じ回の匹数を続けて入れられるように）
+  let needSort = false;
+  hitsEl.addEventListener('focusout', e => {
+    if (!needSort || hitsEl.contains(e.relatedTarget)) return;
+    needSort = false;
+    readHits();
+    sortHits();
+    drawHits();
+    moved = [];
+  });
+
+  hitsEl.addEventListener('change', e => {
+    readHits();
+    if (e.target.classList.contains('hit-at')) {
+      needSort = true;
+      syncTide();
+    } else if (e.target.classList.contains('hit-n')) {
+      const total = hitsEl.querySelector('.hit-total b');
+      if (total) total.textContent = hits.reduce((n, h) => n + (Number(h.count) || 0), 0);
+    }
+  });
+  hitsEl.addEventListener('click', e => {
+    const d = e.target.closest('[data-del-hit]');
+    if (!d) return;
+    readHits();
+    const [removed] = hits.splice(Number(d.dataset.delHit), 1);
+    if (removed.photo) hits[0].photo = true; // 写真の対象は残った最初の回に移す
+    dirty = true;
+    drawHits();
+    syncDate();
+  });
+  document.getElementById('hit-add').addEventListener('click', () => {
+    readHits();
+    sortHits();
+    needSort = false;
+    hits.push({ at: hits[hits.length - 1].at, count: 1, photo: false });
+    dirty = true;
+    drawHits();
+    const inputs = hitsEl.querySelectorAll('.hit-at');
+    inputs[inputs.length - 1].focus();
+  });
   // 潮：日付の月齢から潮名を計算する。新規登録では自動で入れる（手で選び直したらそのまま）。
   // 編集では保存済みの値を変えず、計算結果を案内だけする
   const tideSelect = form.elements.tide_name;
@@ -1018,8 +1113,8 @@ function viewForm(albumId, catchId, params) {
   let tideTouched = editing;
   tideSelect.addEventListener('change', () => { tideTouched = true; syncTide(); });
   function syncTide() {
-    const d = new Date(dateInput.value);
-    if (!dateInput.value || isNaN(d)) {
+    const d = firstDate();
+    if (isNaN(d)) {
       tideHint.textContent = '';
       return;
     }
@@ -1051,20 +1146,23 @@ function viewForm(albumId, catchId, params) {
       tideLevelEl.textContent = `潮位（予測）：${now.level}${now.since ? '・' + now.since : ''}　${r.station.name}（約${Math.round(r.km)}km）`;
     });
   }
-  dateInput.addEventListener('change', syncTide);
 
   function syncDate() {
+    if (hitsEl.querySelector('.hit-at')) readHits();
     const auto = dateMode === 'photo';
-    dateInput.disabled = auto;
     if (!auto) {
       dateHint.textContent = '日時を自由に変えられます。';
+      drawHits();
       syncTide();
       return;
     }
     const d = photoDate();
-    dateInput.value = toLocalInput(d || baseDate);
+    hits.find(h => h.photo).at = d ? toLocalInput(d) : photoBase;
+    sortHits();
+    drawHits();
+    moved = [];
     const fallback = editing ? '保存済みの日時' : '今の日時';
-    dateHint.textContent = d ? '写真の撮影日時を使っています。'
+    dateHint.textContent = d ? `写真の撮影日時を使っています${hits.length > 1 ? '（ロックされている回）' : ''}。`
       : photos.some(p => p.kind === 'new') ? `写真に撮影日時が無いため、${fallback}を使います。`
       : `写真を選ぶと撮影日時が入ります（それまでは${fallback}）。`;
     syncTide();
@@ -1072,7 +1170,7 @@ function viewForm(albumId, catchId, params) {
   form.querySelectorAll('input[name="date_mode"]').forEach(r => r.addEventListener('change', () => {
     dateMode = r.value;
     syncDate();
-    if (dateMode === 'manual') dateInput.focus();
+    if (dateMode === 'manual') hitsEl.querySelector('.hit-at').focus();
   }));
 
   function drawPhotos() {
@@ -1177,8 +1275,12 @@ function viewForm(albumId, catchId, params) {
   form.addEventListener('submit', async e => {
     e.preventDefault();
     const f = form.elements;
-    const caught = new Date(f.caught_at.value);
-    if (!f.caught_at.value || isNaN(caught)) return toast('日時を入力してください');
+    readHits();
+    needSort = false;
+    if (hits.some(h => !h.at || isNaN(new Date(h.at)))) return toast('釣れた時刻を入力してください');
+    if (hits.some(h => !Number.isInteger(Number(h.count)) || Number(h.count) < 1)) return toast('匹数は1以上の整数で入力してください');
+    sortHits();
+    const caught = firstDate();
     if (coord.value.trim()) {
       const typed = parseLatLng(coord.value);
       if (!typed) return toast('緯度経度の形が正しくありません（例：35.123, 138.123）');
@@ -1186,8 +1288,7 @@ function viewForm(albumId, catchId, params) {
     }
     if (!loc) return toast('位置を指定してください（地図をタップ・現在地・緯度経度）');
     if (!f.species.value.trim()) return toast('魚種を入力してください');
-    const count = Number(f.count.value);
-    if (!Number.isInteger(count) || count < 1) return toast('匹数は1以上の整数で入力してください');
+    const count = hits.reduce((n, h) => n + Number(h.count), 0);
 
     const fields = {
       caught_at: toLocalIso(caught),
@@ -1198,6 +1299,7 @@ function viewForm(albumId, catchId, params) {
       size_cm: f.size_cm.value === '' ? '' : Number(f.size_cm.value),
       weight_g: f.weight_g.value === '' ? '' : Number(f.weight_g.value),
       count,
+      hits: hits.map(h => ({ at: toLocalIso(new Date(h.at)), count: Number(h.count) })),
       angler_member_id: f.angler_member_id.value,
       tide_name: f.tide_name.value,
       method: f.method.value.trim(),
@@ -1271,6 +1373,7 @@ function viewDetail(albumId, catchId) {
     const photos = c.photo_ids || [];
     const rows = [
       ['日時', fmtDateTime(c.caught_at)],
+      ['釣れた時刻', hitsOf(c).length > 1 ? hitsOf(c).map(h => `${fmtHitTime(h.at, c.caught_at)} ${h.count}匹`).join('　') : ''],
       ['釣った人', memberName(albumId, c.angler_member_id)],
       ['場所名', c.place_name],
       ['サイズ', c.size_cm != null ? `${c.size_cm} cm` : ''],
@@ -1308,10 +1411,10 @@ function viewDetail(albumId, catchId) {
 
     const tideCard = document.getElementById('tide-card');
     if (tideCard) {
-      const when = new Date(c.caught_at);
-      tideLevel(c.lat, c.lng, when).then(r => {
-        if (!tideCard.isConnected || !r || r.level == null) return;
-        tideCard.innerHTML = tideCardHtml(r, when.getTime());
+      const list = hitsOf(c);
+      Promise.all(list.map(hit => tideLevel(c.lat, c.lng, new Date(hit.at)).then(r => ({ hit, r })))).then(levels => {
+        if (!tideCard.isConnected || !levels[0].r || levels[0].r.level == null) return;
+        tideCard.innerHTML = tideCardHtml(levels);
         tideCard.hidden = false;
       });
     }
