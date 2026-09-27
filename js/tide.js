@@ -65,3 +65,124 @@ export function tideForDate(date) {
   const { age, angle } = moonPhase(noon);
   return { name: tideFromAngle(angle), age };
 }
+
+// ---------- 潮位（気象庁「潮位表」の予測値） ----------
+// data/tide/stations.json（掲載地点）と data/tide/<年>/<記号>.txt（1年分）を読む。
+// どちらも .github/workflows/update-tide.yml が気象庁から取り込んでいる。
+// 潮位表の時刻は日本時間、潮位は各地点の潮位表基準面からの高さ（cm）。
+
+const TIDE_DATA = 'data/tide/';
+const JST = 9 * 3600000;
+const HOUR = 3600000;
+const DAY = 24 * HOUR;
+
+let stationsPromise = null;
+const yearCache = new Map(); // '記号/年' → Promise<Map<'YYYY-MM-DD', 1日分> | null>
+
+function loadStations() {
+  if (!stationsPromise) {
+    stationsPromise = fetch(TIDE_DATA + 'stations.json')
+      .then(r => (r.ok ? r.json() : null))
+      .then(j => (j && Array.isArray(j.stations) ? j.stations : []))
+      .catch(() => []);
+    // 読めなかったときは、次に呼ばれたらもう一度試す
+    stationsPromise.then(list => { if (!list.length) stationsPromise = null; });
+  }
+  return stationsPromise;
+}
+
+// 1行＝1日：毎時潮位（3桁×24）・年月日（2桁×3）・地点記号・満潮（時刻4桁＋潮位3桁）×4・干潮×4。予測なしは 9999/999
+function parseTideTxt(body, year) {
+  const days = new Map();
+  for (const line of body.split('\n')) {
+    if (line.length < 136) continue;
+    const num = (a, b) => Number(line.slice(a, b));
+    const hourly = [];
+    for (let h = 0; h < 24; h++) hourly.push(num(h * 3, h * 3 + 3));
+    const events = [];
+    [['満潮', 80], ['干潮', 108]].forEach(([type, start]) => {
+      for (let i = 0; i < 4; i++) {
+        const p = start + i * 7;
+        const t = line.slice(p, p + 4).trim();
+        if (!t || t === '9999') continue;
+        events.push({ type, hm: Number(t), h: num(p + 4, p + 7) });
+      }
+    });
+    const key = `${year}-${String(num(74, 76)).padStart(2, '0')}-${String(num(76, 78)).padStart(2, '0')}`;
+    if (hourly.every(isFinite)) days.set(key, { hourly, events });
+  }
+  return days;
+}
+
+function loadYear(code, year) {
+  const k = `${code}/${year}`;
+  if (!yearCache.has(k)) {
+    const p = fetch(`${TIDE_DATA}${year}/${code}.txt`)
+      .then(r => (r.ok ? r.text() : null))
+      .then(t => (t ? parseTideTxt(t, year) : null))
+      .catch(() => null);
+    yearCache.set(k, p);
+    p.then(v => { if (!v) yearCache.delete(k); }); // 通信できなかったときは次に取り直す
+  }
+  return yearCache.get(k);
+}
+
+function distanceKm(lat1, lng1, lat2, lng2) {
+  const dLat = (lat2 - lat1) * RAD;
+  const dLng = (lng2 - lng1) * RAD;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * RAD) * Math.cos(lat2 * RAD) * Math.sin(dLng / 2) ** 2;
+  return 12742 * Math.asin(Math.sqrt(a));
+}
+
+// 日本時間のその日（0時）の時刻（ms）と、日付の文字
+function jstDay(ms) {
+  const start = Math.floor((ms + JST) / DAY) * DAY - JST;
+  const d = new Date(start + JST);
+  const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+  return { start, key, year: d.getUTCFullYear() };
+}
+
+async function dayAt(code, ms) {
+  const day = jstDay(ms);
+  const year = await loadYear(code, day.year);
+  const data = year && year.get(day.key);
+  return data ? { ...day, ...data } : null;
+}
+
+// 日本時間の「時:分」
+export function jstTime(ms) {
+  const d = new Date(ms + JST);
+  return `${d.getUTCHours()}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
+}
+
+// その場所・時刻の潮位。いちばん近い掲載地点の予測値を使う。データが無ければ null
+export async function tideLevel(lat, lng, date) {
+  const t = date.getTime();
+  if (!isFinite(lat) || !isFinite(lng) || !isFinite(t)) return null;
+  const stations = await loadStations();
+  if (!stations.length) return null;
+  let best = null;
+  for (const s of stations) {
+    const km = distanceKm(lat, lng, s.lat, s.lng);
+    if (!best || km < best.km) best = { station: s, km };
+  }
+  const [prevDay, today, nextDay] = await Promise.all([t - DAY, t, t + DAY].map(ms => dayAt(best.station.code, ms)));
+  if (!today) return { ...best, level: null };
+
+  // 毎時の値のあいだを直線でつなぐ（23時台は翌日0時の値を使う）
+  const pos = (t - today.start) / HOUR;
+  const h0 = Math.floor(pos);
+  const a = today.hourly[h0];
+  const b = h0 < 23 ? today.hourly[h0 + 1] : (nextDay ? nextDay.hourly[0] : a);
+  const level = Math.round(a + (b - a) * (pos - h0));
+
+  const toEvents = d => (d ? d.events.map(e => ({
+    type: e.type, h: e.h, ms: d.start + Math.floor(e.hm / 100) * HOUR + (e.hm % 100) * 60000
+  })) : []);
+  const dayEvents = toEvents(today).sort((x, y) => x.ms - y.ms);
+  const all = [...toEvents(prevDay), ...dayEvents, ...toEvents(nextDay)].sort((x, y) => x.ms - y.ms);
+  const prev = [...all].reverse().find(e => e.ms <= t) || null;
+  const next = all.find(e => e.ms > t) || null;
+  const trend = next ? (next.type === '満潮' ? '上げ' : '下げ') : prev ? (prev.type === '満潮' ? '下げ' : '上げ') : '';
+  return { ...best, level, trend, prev, next, events: dayEvents };
+}

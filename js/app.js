@@ -15,7 +15,7 @@ import {
   getSettings, saveSettings, getAlbumCache, setAlbumCache, getHomeCache, setHomeCache
 } from './api.js';
 import { MAX_PHOTOS, photoImg, preparePhoto, prepareIcon, blobToBase64 } from './photos.js';
-import { tideForDate } from './tide.js';
+import { tideForDate, tideLevel, jstTime } from './tide.js';
 import { LAYERS, mapReady, createCatchMap, createPickerMap, createMiniMap, getCurrentPosition } from './map.js';
 
 const $app = document.getElementById('app');
@@ -696,6 +696,26 @@ function catchThumb(albumId, c) {
   return `<div class="thumb-empty">${icon('camera')}</div>`;
 }
 
+// 潮位の文言：「約80cm・下げ」と「満潮（3:12）から2時間18分後」
+function durationText(ms) {
+  const m = Math.max(0, Math.round(ms / 60000));
+  return m >= 60 ? `${Math.floor(m / 60)}時間${m % 60}分` : `${m}分`;
+}
+
+function tideNowText(r, t) {
+  const since = r.prev ? `${r.prev.type}（${jstTime(r.prev.ms)}）から${durationText(t - r.prev.ms)}後` : '';
+  return { level: `約${r.level}cm${r.trend ? '・' + r.trend : ''}`, since };
+}
+
+function tideCardHtml(r, t) {
+  const now = tideNowText(r, t);
+  const list = type => r.events.filter(e => e.type === type).map(e => `${jstTime(e.ms)}（${e.h}cm）`).join('　') || 'なし';
+  return `<h2>潮位 <span class="muted small">（予測）</span></h2>
+    <p class="tide-now"><b>${esc(now.level)}</b> <span class="muted small">${esc(now.since)}</span></p>
+    <dl class="fields"><dt>満潮</dt><dd>${esc(list('満潮'))}</dd><dt>干潮</dt><dd>${esc(list('干潮'))}</dd></dl>
+    <p class="muted small">釣った時刻 ${esc(jstTime(t))}・${esc(r.station.name)}（約${Math.round(r.km)}km）の予測です。出典：気象庁「潮位表」。川の上流などでは時刻が遅れることがあります。</p>`;
+}
+
 function catchSummary(c) {
   const bits = [];
   if (c.size_cm != null && c.size_cm !== '') bits.push(`${c.size_cm}cm`);
@@ -968,6 +988,7 @@ function viewForm(albumId, catchId, params) {
             <select name="tide_name"><option value="">（未選択）</option>${TIDES.map(t => `<option ${v.tide_name === t ? 'selected' : ''}>${t}</option>`).join('')}</select>
           </label>
           <p class="muted small tide-hint" id="tide-hint"></p>
+          <p class="small tide-hint" id="tide-level"></p>
           <label>釣り方・仕掛け<input name="method" maxlength="100" value="${esc(v.method)}"></label>
           <label>エサ／ルアー<input name="bait" maxlength="100" value="${esc(v.bait)}"></label>
           <label>メモ<textarea name="memo" maxlength="2000" rows="3">${esc(v.memo)}</textarea></label>
@@ -1008,6 +1029,27 @@ function viewForm(albumId, catchId, params) {
     tideHint.textContent = tideSelect.value === t.name
       ? `${calc}${tideTouched ? '' : '自動で入れました。'}渓流など潮に関係ない釣りは「（未選択）」にしてください。`
       : calc;
+    showTideLevel(d);
+  }
+
+  // 潮位（予測）：潮を選んでいて、位置が決まっているときだけ
+  const tideLevelEl = document.getElementById('tide-level');
+  let tideReq = 0;
+  function showTideLevel(d) {
+    const n = ++tideReq;
+    if (!tideSelect.value || !loc) {
+      tideLevelEl.textContent = '';
+      return;
+    }
+    tideLevel(loc.lat, loc.lng, d).then(r => {
+      if (n !== tideReq) return; // もっと新しい計算が始まっている
+      if (!r || r.level == null) {
+        tideLevelEl.textContent = '';
+        return;
+      }
+      const now = tideNowText(r, d.getTime());
+      tideLevelEl.textContent = `潮位（予測）：${now.level}${now.since ? '・' + now.since : ''}　${r.station.name}（約${Math.round(r.km)}km）`;
+    });
   }
   dateInput.addEventListener('change', syncTide);
 
@@ -1080,6 +1122,7 @@ function viewForm(albumId, catchId, params) {
     if (loc && picker && !fromPicker) picker.set(loc);
     gmaps.href = loc ? googleMapsUrl(loc.lat, loc.lng) : '#';
     gmaps.classList.toggle('disabled', !loc);
+    syncTide();
   }
   if (mapReady()) {
     picker = createPickerMap(document.getElementById('picker'), {
@@ -1247,6 +1290,7 @@ function viewDetail(albumId, catchId) {
           <dl class="fields">${rows.map(r => `<dt>${esc(r[0])}</dt><dd>${esc(r[1])}</dd>`).join('')}</dl>
           ${c.memo ? `<p class="memo">${esc(c.memo)}</p>` : ''}
         </section>
+        ${c.tide_name ? '<section class="card" id="tide-card" hidden></section>' : ''}
         <section class="card">
           <div id="mini-map" class="mini-map"></div>
           <p class="muted small">${esc(fmtCoord(c.lat, c.lng))}</p>
@@ -1261,6 +1305,16 @@ function viewDetail(albumId, catchId) {
       </main>`;
 
     if (mapReady()) mini = createMiniMap(document.getElementById('mini-map'), { layerKey: getSettings().layer, lat: c.lat, lng: c.lng });
+
+    const tideCard = document.getElementById('tide-card');
+    if (tideCard) {
+      const when = new Date(c.caught_at);
+      tideLevel(c.lat, c.lng, when).then(r => {
+        if (!tideCard.isConnected || !r || r.level == null) return;
+        tideCard.innerHTML = tideCardHtml(r, when.getTime());
+        tideCard.hidden = false;
+      });
+    }
 
     const gallery = document.getElementById('gallery');
     const dots = document.getElementById('dots');

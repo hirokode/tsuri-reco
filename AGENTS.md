@@ -44,7 +44,7 @@
 | js/api.js | GAS の呼び出し・端末（localStorage）への保存 |
 | js/photos.js | 撮影日時の読み取り・圧縮・写真URLの組み立て（1か所） |
 | js/map.js | Leaflet の地図（レイヤー切替・クラスタ・長押し・ピン指定） |
-| js/tide.js | 潮名の計算（日付の月齢から。外部サービスは使わない） |
+| js/tide.js | 潮名の計算（日付の月齢から）・潮位（data/tide/ の気象庁潮位表を読む） |
 | config.js | GAS の `/exec` URL（API_URL）だけを書く |
 | sw.js / manifest.json / icons/ | PWA（ホーム画面追加・画像キャッシュ） |
 | gas/Code.js | doGet / doPost・API の振り分け・`setup()` |
@@ -53,6 +53,8 @@
 | gas/Photos.js | 写真の保存（EXIF などのメタデータを取り除いてから保存） |
 | .claude/launch.json | ローカル確認用サーバー（`python -m http.server 8123`） |
 | .github/workflows/deploy-gas.yml | gas/ の変更を main に入れると自動で push＋既存デプロイ上書き |
+| .github/workflows/update-tide.yml・.github/scripts/fetch-tide.mjs | 毎月1日に気象庁「潮位表」（全国の掲載地点・前年〜来年）を data/tide/ に取り込む |
+| data/tide/ | 潮位表のデータ（stations.json・<年>/<地点記号>.txt）。自動で更新されるので手で編集しない |
 | ai-rules/CODING_RULES.md | 共通ルールのコピー |
 
 ## デプロイ
@@ -86,6 +88,7 @@
 ## このアプリ固有のルール
 
 - 列を増やすときは `gas/` のヘッダー定義と既存シートの見出し行の両方を更新する（既存の列の順番は変えない）
+- 潮位は気象庁「潮位表」の予測値。画面に出すときは出典（気象庁）を必ず書く
 - 写真の表示URLの組み立ては `js/photos.js` の `photoUrl()` にまとめる（将来の保存先移行に備えるため）
 - 写真は位置情報を使わない・残さない。画面側は canvas で描き直して EXIF を落とし、GAS 側でも `stripJpegMetadata_()` で取り除いてから保存する
 - ユーザーが入力した文字を画面に出すときは必ず `esc()` を通す（トークンを盗まれないように）

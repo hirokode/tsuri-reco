@@ -1,11 +1,12 @@
 // Service Worker：ホーム画面から起動できるようにし、写真を端末にためて2回目以降すぐ表示する。
 // 画面のファイル（app.js など）を変えたら CACHE_VERSION を上げる。
 
-const CACHE_VERSION = 'v9';
+const CACHE_VERSION = 'v10';
 const SHELL_CACHE = 'shell-' + CACHE_VERSION;
 const LIB_CACHE = 'lib-v1';   // CDN のライブラリ（バージョン固定なので変わらない）
 const IMG_CACHE = 'img-v2';   // 写真（CORS で取得したもの）
 const IMG_MAX = 300;          // 写真のキャッシュ上限（古いものから消す）
+const TIDE_CACHE = 'tide-v1'; // 潮位表のデータ（画面の更新では消さない。電波が無くても表示できるように）
 
 const SHELL_FILES = [
   './',
@@ -40,7 +41,9 @@ self.addEventListener('fetch', event => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
 
-  if (url.origin === self.location.origin) {
+  if (url.origin === self.location.origin && url.pathname.includes('/data/tide/')) {
+    event.respondWith(networkFirst(req, TIDE_CACHE));
+  } else if (url.origin === self.location.origin) {
     event.respondWith(networkFirst(req));
   } else if (url.hostname === 'cdn.jsdelivr.net') {
     event.respondWith(cacheFirst(req, LIB_CACHE));
@@ -52,8 +55,8 @@ self.addEventListener('fetch', event => {
 
 // 画面のファイル：まず通信し、つながらなければ控えを使う（更新がすぐ反映されるように）
 // GitHub Pages は10分間のブラウザキャッシュを許すので、no-cache で毎回サーバーに更新の有無を確かめる
-async function networkFirst(req) {
-  const cache = await caches.open(SHELL_CACHE);
+async function networkFirst(req, cacheName = SHELL_CACHE) {
+  const cache = await caches.open(cacheName);
   try {
     const res = await fetch(req.url, { cache: 'no-cache' });
     if (res.ok) cache.put(stripQuery(req), res.clone());
