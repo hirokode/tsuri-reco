@@ -3,6 +3,7 @@
 
 const MAX_ALBUMS_PER_DAY = 20; // アプリ全体で1日に作れるアルバム数（乱用対策）
 const MAX_PHOTOS = 5;
+const MAX_HITS = 50; // 1件の釣果に入れられる「釣れた回」の数
 const TIDE_NAMES = ['', '大潮', '中潮', '小潮', '長潮', '若潮'];
 
 // ---------- アルバム・メンバー ----------
@@ -204,7 +205,7 @@ function catchRow_(catchId, albumId) {
 
 // 画面から来た値を確認・整形する。ここを通った値だけをシートに書く
 function cleanCatch_(c, members) {
-  const caughtAt = text_(c.caught_at, 40, '日時', true);
+  let caughtAt = text_(c.caught_at, 40, '日時', true);
   if (isNaN(Date.parse(caughtAt))) throw apiError_('invalid', '日時の形式が正しくありません');
   const lat = num_(c.lat, -90, 90, '緯度', true);
   const lng = num_(c.lng, -180, 180, '経度', true);
@@ -220,8 +221,14 @@ function cleanCatch_(c, members) {
     if (!p || !validFileId_(p.f) || !validFileId_(p.t)) throw apiError_('invalid', '写真の情報が正しくありません');
     return { f: p.f, t: p.t };
   });
-  const count = num_(c.count, 1, 9999, '匹数', true);
+  let count = num_(c.count, 1, 9999, '匹数', true);
   if (Math.floor(count) !== count) throw apiError_('invalid', '匹数は整数で入力してください');
+  // 釣れた回（時刻と匹数）。時刻順に並べ、日時＝最初の回、匹数＝合計にそろえる
+  const hits = cleanHits_(c.hits);
+  if (hits.length) {
+    caughtAt = hits[0].at;
+    count = hits.reduce(function (sum, h) { return sum + h.count; }, 0);
+  }
   return {
     caught_at: caughtAt,
     lat: lat,
@@ -236,8 +243,23 @@ function cleanCatch_(c, members) {
     method: text_(c.method, 100, '釣り方・仕掛け', false),
     bait: text_(c.bait, 100, 'エサ／ルアー', false),
     memo: text_(c.memo, 2000, 'メモ', false),
-    photo_ids: JSON.stringify(cleanPhotos)
+    photo_ids: JSON.stringify(cleanPhotos),
+    hits: hits.length > 1 ? JSON.stringify(hits) : ''
   };
+}
+
+function cleanHits_(list) {
+  if (!Array.isArray(list)) return [];
+  if (list.length > MAX_HITS) throw apiError_('invalid', '釣れた回は' + MAX_HITS + '回までです');
+  const hits = list.map(function (h) {
+    const at = text_(h && h.at, 40, '釣れた時刻', true);
+    if (isNaN(Date.parse(at))) throw apiError_('invalid', '釣れた時刻の形式が正しくありません');
+    const count = num_(h.count, 1, 9999, '匹数', true);
+    if (Math.floor(count) !== count) throw apiError_('invalid', '匹数は整数で入力してください');
+    return { at: at, count: count };
+  });
+  hits.sort(function (a, b) { return Date.parse(a.at) - Date.parse(b.at); });
+  return hits;
 }
 
 // ---------- 共通 ----------
@@ -281,6 +303,7 @@ function publicCatch_(c) {
     bait: c.bait,
     memo: c.memo,
     photo_ids: parseJson_(c.photo_ids, []),
+    hits: parseJson_(c.hits, null),
     created_by: c.created_by,
     created_at: c.created_at,
     updated_by: c.updated_by,
