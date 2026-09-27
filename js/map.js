@@ -6,7 +6,7 @@ export const LAYERS = {
   osm: {
     name: 'OpenStreetMap',
     url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>'
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors'
   },
   gsi: {
     name: '地理院 標準',
@@ -16,7 +16,8 @@ export const LAYERS = {
   photo: {
     name: '地理院 航空写真',
     url: 'https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg',
-    attribution: '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院</a>'
+    attribution: '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院</a>' +
+      '｜データソース：Landsat8画像（GSI,TSIC,GEO Grid/AIST）、GRUS画像（&copy; Axelspace）'
   }
 };
 

@@ -240,6 +240,8 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--sea); outli
   transition: opacity .2s, transform .2s;
 }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
+/* 地図画面では、地図の出典表示（右下・最大3行）に重ならない高さに出す */
+body:has(.map-page) #toast { bottom: calc(var(--tabbar-h) + 72px + var(--safe-bottom)); }
 #busy { position: fixed; inset: 0; z-index: 2500; background: rgba(0,0,0,.35); display: none; place-items: center; }
 #busy.show { display: grid; }
 .busy-box { background: #fff; border-radius: var(--radius); padding: 22px 28px; text-align: center; min-width: 200px; }
