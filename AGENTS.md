@@ -38,12 +38,19 @@
 
 | ファイル | 役割 |
 |---|---|
-| index.html | 画面の骨組み |
-| app.js | 画面の処理 |
+| index.html | 画面の骨組み（CDN のライブラリは SRI 付きで読み込む） |
 | style.css | 見た目 |
+| js/app.js | 画面の切り替え（`#/…`）と各画面の処理 |
+| js/api.js | GAS の呼び出し・端末（localStorage）への保存 |
+| js/photos.js | 撮影日時の読み取り・圧縮・写真URLの組み立て（1か所） |
+| js/map.js | Leaflet の地図（レイヤー切替・クラスタ・長押し・ピン指定） |
 | config.js | GAS の `/exec` URL（API_URL）だけを書く |
 | sw.js / manifest.json / icons/ | PWA（ホーム画面追加・画像キャッシュ） |
-| gas/ | Apps Script（clasp の rootDir） |
+| gas/Code.js | doGet / doPost・API の振り分け・`setup()` |
+| gas/Api.js | 各 API の中身・トークン確認・入力チェック |
+| gas/Db.js | スプシ・Drive フォルダの自動作成と読み書き |
+| gas/Photos.js | 写真の保存（EXIF などのメタデータを取り除いてから保存） |
+| .claude/launch.json | ローカル確認用サーバー（`python -m http.server 8123`） |
 | .github/workflows/deploy-gas.yml | gas/ の変更を main に入れると自動で push＋既存デプロイ上書き |
 | ai-rules/CODING_RULES.md | 共通ルールのコピー |
 
@@ -78,5 +85,8 @@
 ## このアプリ固有のルール
 
 - 列を増やすときは `gas/` のヘッダー定義と既存シートの見出し行の両方を更新する（既存の列の順番は変えない）
-- 写真の表示URLの組み立ては app.js の1つの関数にまとめる（将来の保存先移行に備えるため）
+- 写真の表示URLの組み立ては `js/photos.js` の `photoUrl()` にまとめる（将来の保存先移行に備えるため）
+- 写真は位置情報を使わない・残さない。画面側は canvas で描き直して EXIF を落とし、GAS 側でも `stripJpegMetadata_()` で取り除いてから保存する
+- ユーザーが入力した文字を画面に出すときは必ず `esc()` を通す（トークンを盗まれないように）
+- API を追加・変更したら、トークンの確認（`auth_()`）で「そのアルバムのデータだけ」になっているか確かめる
 - 画面とサーバーを同時に変えるときは、新しい画面が古いサーバーを呼んでも壊れないように作る
