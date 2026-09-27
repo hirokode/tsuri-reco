@@ -18,7 +18,8 @@ export function photoFallbackUrl(fileId, width) {
 
 // <img> の HTML。読み込みに失敗したら予備のURLに切り替える（app.js の error 監視）
 export function photoImg(fileId, width, className = '', alt = '') {
-  return `<img class="${className}" src="${photoUrl(fileId, width)}" data-fallback="${photoFallbackUrl(fileId, width)}" loading="lazy" decoding="async" alt="${alt}">`;
+  // crossorigin：どちらのURLも CORS を許可しているので、Service Worker が中身の見える形でキャッシュできる
+  return `<img class="${className}" src="${photoUrl(fileId, width)}" data-fallback="${photoFallbackUrl(fileId, width)}" crossorigin="anonymous" loading="lazy" decoding="async" alt="${alt}">`;
 }
 
 // 撮影日時（EXIF）。読めなければ null。位置情報は読まない

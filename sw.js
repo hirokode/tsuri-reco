@@ -1,10 +1,10 @@
 // Service Worker：ホーム画面から起動できるようにし、写真を端末にためて2回目以降すぐ表示する。
 // 画面のファイル（app.js など）を変えたら CACHE_VERSION を上げる。
 
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'v2';
 const SHELL_CACHE = 'shell-' + CACHE_VERSION;
 const LIB_CACHE = 'lib-v1';   // CDN のライブラリ（バージョン固定なので変わらない）
-const IMG_CACHE = 'img-v1';   // 写真
+const IMG_CACHE = 'img-v2';   // 写真（CORS で取得したもの）
 const IMG_MAX = 300;          // 写真のキャッシュ上限（古いものから消す）
 
 const SHELL_FILES = [
@@ -28,7 +28,7 @@ self.addEventListener('activate', event => {
   event.waitUntil(
     caches.keys()
       .then(keys => Promise.all(keys
-        .filter(k => k.startsWith('shell-') && k !== SHELL_CACHE)
+        .filter(k => (k.startsWith('shell-') && k !== SHELL_CACHE) || (k.startsWith('img-') && k !== IMG_CACHE))
         .map(k => caches.delete(k))))
       .then(() => self.clients.claim())
   );
