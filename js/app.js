@@ -95,6 +95,13 @@ function isIOS() {
   return /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 }
 
+// スマホ・タブレットかどうか。「LINEで送る」（line.me/R/share）はスマホのLINEアプリでしか開けず、
+// PCではLINE公式サイトが開いてしまうため、PCではコピーだけにする
+function isMobileDevice() {
+  if (navigator.userAgentData && typeof navigator.userAgentData.mobile === 'boolean' && navigator.userAgentData.mobile) return true;
+  return isIOS() || /Android|Mobile/i.test(navigator.userAgent);
+}
+
 function isStandalone() {
   return window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
 }
@@ -501,9 +508,10 @@ function shareBlock(token, who) {
     <input class="link-box" readonly value="${esc(url)}" aria-label="招待リンク">
     <div class="row">
       <button class="btn" data-copy="${esc(url)}">コピー</button>
-      <a class="btn line" href="${esc(lineShareUrl(message))}" target="_blank" rel="noopener">LINEで送る</a>
-      ${navigator.share ? `<button class="btn" data-share="${esc(url)}">共有</button>` : ''}
+      ${isMobileDevice() ? `<a class="btn line" href="${esc(lineShareUrl(message))}" target="_blank" rel="noopener">LINEで送る</a>
+      ${navigator.share ? `<button class="btn" data-share="${esc(url)}">共有</button>` : ''}` : ''}
     </div>
+    ${isMobileDevice() ? '' : '<p class="muted small">コピーして、PC版LINEなどのトーク画面に貼り付けて送ってください。</p>'}
   </div>`;
 }
 
