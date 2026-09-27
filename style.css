@@ -305,3 +305,4 @@ body.no-select input, body.no-select textarea { -webkit-user-select: text; user-
 input[type="datetime-local"] { -webkit-appearance: none; appearance: none; min-width: 0; max-width: 100%; text-align: left; }
 input[type="datetime-local"]::-webkit-date-and-time-value { text-align: left; margin: 0; }
 input[type="datetime-local"]:disabled { background: #f1f4f6; color: var(--text); -webkit-text-fill-color: var(--text); opacity: 1; }
+.tide-hint { margin-top: -6px; margin-bottom: 12px; }

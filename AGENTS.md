@@ -44,6 +44,7 @@
 | js/api.js | GAS の呼び出し・端末（localStorage）への保存 |
 | js/photos.js | 撮影日時の読み取り・圧縮・写真URLの組み立て（1か所） |
 | js/map.js | Leaflet の地図（レイヤー切替・クラスタ・長押し・ピン指定） |
+| js/tide.js | 潮名の計算（日付の月齢から。外部サービスは使わない） |
 | config.js | GAS の `/exec` URL（API_URL）だけを書く |
 | sw.js / manifest.json / icons/ | PWA（ホーム画面追加・画像キャッシュ） |
 | gas/Code.js | doGet / doPost・API の振り分け・`setup()` |
