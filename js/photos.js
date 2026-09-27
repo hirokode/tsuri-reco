@@ -4,6 +4,7 @@
 export const MAX_PHOTOS = 5;
 const FULL_SIDE = 1600;
 const THUMB_SIDE = 400;
+const ICON_SIDE = 800;
 const QUALITY = 0.8;
 
 // 写真の表示URLはこの関数だけで組み立てる（将来、保存先を移すときはここを直す）
@@ -67,6 +68,29 @@ export async function preparePhoto(file) {
   const full = await resize(img, FULL_SIDE);
   const thumb = await resize(img, THUMB_SIDE);
   return { takenAt, full, thumb, previewUrl: URL.createObjectURL(thumb) };
+}
+
+// 中央を正方形に切り抜いて side×side の JPEG にする（アルバムのアイコン用）
+function cropSquare(img, side) {
+  const s = Math.min(img.naturalWidth, img.naturalHeight);
+  const out = Math.max(1, Math.min(side, s));
+  const canvas = document.createElement('canvas');
+  canvas.width = out;
+  canvas.height = out;
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, (img.naturalWidth - s) / 2, (img.naturalHeight - s) / 2, s, s, 0, 0, out, out);
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(b => (b ? resolve(b) : reject(new Error('画像の圧縮に失敗しました'))), 'image/jpeg', QUALITY);
+  });
+}
+
+// アルバムのアイコン画像：正方形に切り抜いた原寸（800px）・サムネ（400px）を作る
+export async function prepareIcon(file) {
+  const img = await loadImage(file);
+  const full = await cropSquare(img, ICON_SIDE);
+  const thumb = await cropSquare(img, THUMB_SIDE);
+  return { full, thumb, previewUrl: URL.createObjectURL(thumb) };
 }
 
 export function blobToBase64(blob) {

@@ -71,6 +71,28 @@ function apiUpdateMe_(req) {
   });
 }
 
+// アルバム名・アイコン画像の変更（メンバーなら誰でもできる）。
+// icon：{f,t} で設定、null で外す、送られてこなければそのまま
+function apiUpdateAlbum_(req) {
+  const name = text_(req.name, 50, 'アルバム名', true);
+  const hasIcon = Object.prototype.hasOwnProperty.call(req, 'icon');
+  const icon = hasIcon ? cleanIcon_(req.icon) : null;
+  return withLock_(function () {
+    const me = auth_(req.token);
+    const album = albumRow_(me.album_id);
+    album.name = name;
+    if (hasIcon) album.icon_photo = icon ? JSON.stringify(icon) : '';
+    updateRow_('albums', album._row, album);
+    return { album: publicAlbum_(album) };
+  });
+}
+
+function cleanIcon_(p) {
+  if (p === null || p === undefined || p === '') return null;
+  if (!validFileId_(p.f) || !validFileId_(p.t)) throw apiError_('invalid', 'アイコン画像の情報が正しくありません');
+  return { f: p.f, t: p.t };
+}
+
 // ホーム画面用。端末が持っているトークンそれぞれについて、アルバムの概要を返す
 function apiListAlbums_(req) {
   const tokens = Array.isArray(req.tokens) ? req.tokens.slice(0, 30) : [];
@@ -90,6 +112,7 @@ function apiListAlbums_(req) {
       valid: true,
       album_id: album.album_id,
       album_name: album.name,
+      album_icon: parseJson_(album.icon_photo, null),
       me: publicMember_(me),
       members: members.filter(function (m) { return m.album_id === album.album_id; }).map(publicMember_),
       catch_count: list.length,
@@ -108,7 +131,7 @@ function apiGetAlbum_(req) {
     return c.album_id === album.album_id && c.deleted !== 'true';
   });
   return {
-    album: { album_id: album.album_id, name: album.name, created_at: album.created_at },
+    album: publicAlbum_(album),
     me: publicMember_(me),
     members: members.map(publicMember_),
     invites: members.filter(function (m) { return !m.joined_at; }).map(function (m) {
@@ -230,6 +253,10 @@ function albumRow_(albumId) {
   const album = readRows_('albums').filter(function (a) { return a.album_id === albumId; })[0];
   if (!album) throw apiError_('invalid_token', 'アルバムが見つかりません');
   return album;
+}
+
+function publicAlbum_(a) {
+  return { album_id: a.album_id, name: a.name, created_at: a.created_at, icon: parseJson_(a.icon_photo, null) };
 }
 
 function publicMember_(m) {

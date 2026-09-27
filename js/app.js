@@ -8,12 +8,13 @@
 //   #/a/<id>/c/<cid>       詳細
 //   #/a/<id>/c/<cid>/edit  編集
 //   #/a/<id>/settings      設定
+//   #/a/<id>/edit          アルバム名・アイコン画像の編集
 
 import {
   api, ApiError, getSessions, sessionFor, upsertSession, updateSession, removeSession,
   getSettings, saveSettings, getAlbumCache, setAlbumCache, getHomeCache, setHomeCache
 } from './api.js';
-import { MAX_PHOTOS, photoImg, preparePhoto, blobToBase64 } from './photos.js';
+import { MAX_PHOTOS, photoImg, preparePhoto, prepareIcon, blobToBase64 } from './photos.js';
 import { LAYERS, mapReady, createCatchMap, createPickerMap, createMiniMap, getCurrentPosition } from './map.js';
 
 const $app = document.getElementById('app');
@@ -159,7 +160,8 @@ function icon(name) {
     plus: '<path d="M12 5v14M5 12h14"/>',
     camera: '<path d="M4 8h3l2-2.5h6L17 8h3v11H4z"/><circle cx="12" cy="13.5" r="3.5"/>',
     pin: '<path d="M12 21s-6.5-6.2-6.5-11a6.5 6.5 0 0113 0c0 4.8-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/>',
-    x: '<path d="M6 6l12 12M18 6L6 18"/>'
+    x: '<path d="M6 6l12 12M18 6L6 18"/>',
+    edit: '<path d="M4 20h4L19 9l-4-4L4 16z M13 7l4 4"/>'
   };
   return `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${paths[name] || ''}</svg>`;
 }
@@ -259,6 +261,7 @@ function render() {
     if (sub === 'map' || sub === 'list') return viewAlbum(albumId, sub);
     if (sub === 'new') return viewForm(albumId, null, params);
     if (sub === 'settings') return viewSettings(albumId);
+    if (sub === 'edit') return viewAlbumEdit(albumId);
     if (sub === 'c' && parts[3]) {
       if (parts[4] === 'edit') return viewForm(albumId, parts[3], params);
       return viewDetail(albumId, parts[3]);
@@ -375,13 +378,18 @@ function viewHome() {
       const joinedOthers = others.filter(m => m.joined).map(m => m.display_name);
       const waiting = others.filter(m => !m.joined).length;
       const people = joinedOthers.length ? joinedOthers.join('・') + 'と' : '';
-      return `<a class="album-card" href="#/a/${esc(s.album_id)}/list">
-        <div class="album-thumb">${sum && sum.last_photo ? photoImg(sum.last_photo.t, 400) : icon('map')}</div>
+      // アイコン画像があればそれを、なければ最新の釣果の写真を出す
+      const cover = sum && (sum.album_icon || sum.last_photo);
+      return `<div class="album-item">
+        <a class="album-card" href="#/a/${esc(s.album_id)}/list">
+        <div class="album-thumb">${cover ? photoImg(cover.t, 400) : icon('map')}</div>
         <div class="album-body">
           <h2>${esc(sum ? sum.album_name : s.album_name)}</h2>
           <p class="muted">${esc(people)}${waiting ? '<span class="chip">招待中</span>' : ''}</p>
           <p class="muted small">${sum ? `${sum.catch_count}件${sum.last_caught_at ? '・最終 ' + fmtDate(sum.last_caught_at) : ''}` : ''}</p>
-        </div></a>`;
+        </div></a>
+        <a class="album-edit" href="#/a/${esc(s.album_id)}/edit" aria-label="アルバム名・アイコンを編集">${icon('edit')}</a>
+      </div>`;
     }).join('');
     $app.innerHTML = `${topbar('Tsuri Reco')}
       <main class="page">
@@ -1220,6 +1228,12 @@ function viewSettings(albumId) {
     $app.innerHTML = `${topbar('設定', { back: `#/a/${albumId}/list` })}
       <main class="page">
         ${st.error && st.error.code === 'invalid_token' ? invalidTokenBox(albumId) : ''}
+        <section class="card">
+          <h2>アルバム</h2>
+          <p class="muted small">アルバム名とアイコン画像を変えられます（メンバー全員の画面で変わります）。</p>
+          <a class="btn block" href="#/a/${esc(albumId)}/edit">${icon('edit')} アルバム名・アイコンを編集</a>
+        </section>
+
         <form id="name-form" class="card form">
           <h2>表示名</h2>
           <p class="muted small">「${esc(albumTitle(albumId))}」での、あなたの名前です。</p>
@@ -1277,6 +1291,128 @@ function viewSettings(albumId) {
   }
 
   current.refresh = draw;
+  draw();
+  refreshAlbum(albumId);
+}
+
+// ---------- アルバム名・アイコン画像の編集 ----------
+
+function viewAlbumEdit(albumId) {
+  const st = stateOf(albumId);
+  const session = sessionFor(albumId);
+  let cover = null;     // 今のアイコン：{kind:'existing', f, t} / {kind:'new', full, thumb, previewUrl} / null
+  let iconChanged = false;
+  let dirty = false;
+  let drawn = false;
+  const created = [];   // この画面で作ったプレビューURL（画面を閉じたら解放）
+
+  function preview() {
+    if (!cover) return icon('map');
+    return cover.kind === 'existing' ? photoImg(cover.t, 400) : `<img src="${cover.previewUrl}" alt="">`;
+  }
+
+  function draw() {
+    if (!st.data) {
+      $app.innerHTML = `${topbar('アルバムを編集', { back: '#/' })}<main class="page">
+        ${st.error ? (st.error.code === 'invalid_token' ? invalidTokenBox(albumId) : errorBox(st.error.message)) : '<div class="skeleton-card"></div>'}</main>`;
+      return;
+    }
+    drawn = true;
+    const album = st.data.album;
+    if (!iconChanged) cover = album.icon ? { kind: 'existing', f: album.icon.f, t: album.icon.t } : null;
+    $app.innerHTML = `${topbar('アルバムを編集', { back: '#/' })}
+      <main class="page">
+        ${st.error && st.error.code === 'invalid_token' ? invalidTokenBox(albumId) : ''}
+        <form id="album-form" class="card form" novalidate>
+          <h2>アイコン画像</h2>
+          <div class="icon-edit">
+            <div class="album-thumb large" id="icon-preview">${preview()}</div>
+            <div class="icon-edit-btns">
+              <label class="btn">${icon('camera')} 画像を選ぶ
+                <input type="file" accept="image/*" hidden id="icon-input">
+              </label>
+              <button type="button" class="btn text" id="icon-clear" ${cover ? '' : 'hidden'}>画像を外す</button>
+            </div>
+          </div>
+          <p class="muted small">画像の真ん中を正方形に切り抜いて使います。設定しないときは、最新の釣果の写真がアルバム一覧に表示されます。</p>
+          <label>アルバム名 <span class="req">必須</span>
+            <input name="name" required maxlength="50" value="${esc(album.name)}">
+          </label>
+          <button class="btn primary block big" type="submit">保存する</button>
+        </form>
+        <p class="muted small center">アルバム名とアイコン画像は、メンバー全員の画面で変わります。</p>
+      </main>`;
+
+    const form = document.getElementById('album-form');
+    const input = document.getElementById('icon-input');
+    const clear = document.getElementById('icon-clear');
+    const redrawIcon = () => {
+      document.getElementById('icon-preview').innerHTML = preview();
+      clear.hidden = !cover;
+    };
+
+    form.addEventListener('input', () => { dirty = true; });
+    input.addEventListener('change', async () => {
+      const file = input.files && input.files[0];
+      input.value = '';
+      if (!file) return;
+      busy(true, '画像を準備しています…');
+      try {
+        const p = await prepareIcon(file);
+        created.push(p.previewUrl);
+        cover = { kind: 'new', ...p };
+        iconChanged = true;
+        dirty = true;
+        redrawIcon();
+      } catch (e) {
+        toast(e.message, 4000);
+      } finally {
+        busy(false);
+      }
+    });
+    clear.addEventListener('click', () => {
+      cover = null;
+      iconChanged = true;
+      dirty = true;
+      redrawIcon();
+    });
+
+    // 戻るときに入力が消える確認
+    $app.querySelector('[data-back]').addEventListener('click', e => {
+      if (dirty && !confirm('変更した内容を破棄して戻りますか？')) {
+        e.stopImmediatePropagation();
+        e.preventDefault();
+      }
+    }, true);
+
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      const name = form.elements.name.value.trim();
+      if (!name) return toast('アルバム名を入力してください');
+      busy(true, cover && cover.kind === 'new' ? '画像を送っています…' : '保存しています…');
+      try {
+        const payload = { token: session.token, name };
+        if (iconChanged) payload.icon = cover ? (await uploadPhotos(session.token, [cover], null))[0] : null;
+        busy(true, '保存しています…');
+        const res = await api('updateAlbum', payload);
+        st.data.album = { ...st.data.album, ...res.album };
+        saveStateCache(albumId);
+        updateSession(albumId, { album_name: res.album.name });
+        setHomeCache(getHomeCache().map(x => (x.album_id === albumId ? { ...x, album_name: res.album.name, album_icon: res.album.icon } : x)));
+        dirty = false;
+        toast('保存しました');
+        goBack('#/');
+      } catch (err) {
+        toast(err.message, 4000);
+      } finally {
+        busy(false);
+      }
+    });
+  }
+
+  // 読み込みが終わったら描き直す（入力中なら消さないようにそのまま）
+  current.refresh = () => { if (!drawn || !dirty) draw(); };
+  current.cleanup = () => created.forEach(u => URL.revokeObjectURL(u));
   draw();
   refreshAlbum(albumId);
 }

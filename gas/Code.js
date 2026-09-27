@@ -11,7 +11,8 @@ const ACTIONS = {
   saveCatch: apiSaveCatch_,
   deleteCatch: apiDeleteCatch_,
   uploadPhoto: apiUploadPhoto_,
-  updateMe: apiUpdateMe_
+  updateMe: apiUpdateMe_,
+  updateAlbum: apiUpdateAlbum_
 };
 
 // 動作確認用。ブラウザで /exec を開くと {ok:true} が返る
