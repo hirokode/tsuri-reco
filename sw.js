@@ -1,7 +1,7 @@
 // Service Worker：ホーム画面から起動できるようにし、写真を端末にためて2回目以降すぐ表示する。
 // 画面のファイル（app.js など）を変えたら CACHE_VERSION を上げる。
 
-const CACHE_VERSION = 'v2';
+const CACHE_VERSION = 'v3';
 const SHELL_CACHE = 'shell-' + CACHE_VERSION;
 const LIB_CACHE = 'lib-v1';   // CDN のライブラリ（バージョン固定なので変わらない）
 const IMG_CACHE = 'img-v2';   // 写真（CORS で取得したもの）
@@ -50,10 +50,11 @@ self.addEventListener('fetch', event => {
 });
 
 // 画面のファイル：まず通信し、つながらなければ控えを使う（更新がすぐ反映されるように）
+// GitHub Pages は10分間のブラウザキャッシュを許すので、no-cache で毎回サーバーに更新の有無を確かめる
 async function networkFirst(req) {
   const cache = await caches.open(SHELL_CACHE);
   try {
-    const res = await fetch(req);
+    const res = await fetch(req.url, { cache: 'no-cache' });
     if (res.ok) cache.put(stripQuery(req), res.clone());
     return res;
   } catch (e) {
