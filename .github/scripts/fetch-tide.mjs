@@ -35,9 +35,9 @@ async function get(url) {
 
 const text = html => html.replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim();
 
-// 「35°39'」「35°39′」「35度39分」「35-39」などを度に直す
+// 「35゜39'」（気象庁の表の書き方）・「35°39′」・「35度39分」などを度に直す
 function degree(s) {
-  const m = String(s).match(/(\d{2,3})\s*(?:°|度|º|-)\s*(\d{1,2}(?:\.\d+)?)/);
+  const m = String(s).match(/(\d{2,3})\s*(?:゜|°|度|º|˚)\s*(\d{1,2}(?:\.\d+)?)/);
   return m ? Number(m[1]) + Number(m[2]) / 60 : null;
 }
 
