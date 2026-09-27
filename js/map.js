@@ -93,6 +93,31 @@ function addLocateButton(map, onError) {
   new Control().addTo(map);
 }
 
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// 画面に触れている指の数（長押しのあと、指を離すのを待つため）
+let touchCount = 0;
+['touchstart', 'touchend', 'touchcancel'].forEach(ev => document.addEventListener(ev, e => { touchCount = e.touches.length; }, { capture: true, passive: true }));
+
+// すべての指が離れたら（または maxMs 経ったら）終わる
+function fingerUp(maxMs) {
+  if (!touchCount) return Promise.resolve();
+  return new Promise(resolve => {
+    const done = () => {
+      clearTimeout(timer);
+      document.removeEventListener('touchend', check, true);
+      document.removeEventListener('touchcancel', check, true);
+      resolve();
+    };
+    const check = e => { if (!e.touches.length) done(); };
+    const timer = setTimeout(done, maxMs);
+    document.addEventListener('touchend', check, true);
+    document.addEventListener('touchcancel', check, true);
+  });
+}
+
 // アルバムの地図。釣果をピン（近いものはまとめて）表示し、長押しで onLongPress を呼ぶ
 export function createCatchMap(el, { layerKey, catches, colorOf, popupHtml, onLongPress, onError, view }) {
   const map = baseMap(el, layerKey);
@@ -118,7 +143,17 @@ export function createCatchMap(el, { layerKey, catches, colorOf, popupHtml, onLo
 
   if (view) map.setView(view.center, view.zoom);
   setCatches(catches, !view);
-  map.on('contextmenu', e => onLongPress(e.latlng));
+
+  // 長押し：押した場所に波紋とピンを出し、指を離してから（最大1.2秒）次の画面へ
+  let pressing = false;
+  map.on('contextmenu', e => {
+    if (pressing) return;
+    pressing = true;
+    L.marker(e.latlng, { icon: L.divIcon({ className: 'press-ripple', iconSize: [90, 90] }), interactive: false, keyboard: false }).addTo(map);
+    L.marker(e.latlng, { icon: pinIcon(0, 'drop'), interactive: false, keyboard: false }).addTo(map);
+    if (navigator.vibrate) navigator.vibrate(12);
+    Promise.all([delay(320), fingerUp(1200)]).then(() => onLongPress(e.latlng, { touching: touchCount > 0 }));
+  });
   return {
     map,
     setCatches: list => setCatches(list, false),

@@ -194,6 +194,7 @@ let current = { cleanup: null, refresh: null, albumId: null };
 // アプリ内で見た画面の履歴（「戻る」でアプリの外に出ないようにするため）
 const visited = [location.hash || '#/'];
 let replacing = false;
+let navDir = 'fade'; // 画面が切り替わるときの動き：fwd（進む）/ back（戻る）/ fade（置き換え）
 
 function replaceHash(hash) {
   replacing = true;
@@ -211,10 +212,13 @@ window.addEventListener('hashchange', () => {
   if (replacing) {
     visited[visited.length - 1] = hash;
     replacing = false;
+    navDir = 'fade';
   } else if (visited.length > 1 && visited[visited.length - 2] === hash) {
     visited.pop();
+    navDir = 'back';
   } else {
     visited.push(hash);
+    navDir = 'fwd';
   }
   render();
 });
@@ -238,7 +242,37 @@ function parseRoute() {
   return { parts, params };
 }
 
+// 新しい画面の本文を、切り替わる向きに合わせて滑らかに出す
+function animateEnter() {
+  if (replacing) return; // 別の画面へ置き換え中（その画面の表示のときに動かす）
+  const main = $app.querySelector('main');
+  if (main) main.classList.add('enter-' + navDir);
+  navDir = 'fade';
+}
+
+// 指を離すまで（最大 ms ミリ秒）、画面の文字が選択されないようにする。
+// 長押しで画面が切り替わったとき、押したままの指で新しい画面の文字が選択されてしまうのを防ぐ
+function guardSelection(ms = 2500) {
+  document.body.classList.add('no-select');
+  const release = () => {
+    clearTimeout(guardSelection.timer);
+    guardSelection.timer = setTimeout(() => {
+      document.body.classList.remove('no-select');
+      const sel = window.getSelection && window.getSelection();
+      if (sel && sel.type === 'Range') sel.removeAllRanges();
+    }, 300);
+  };
+  ['touchend', 'touchcancel', 'pointerup'].forEach(ev => document.addEventListener(ev, release, { once: true, capture: true }));
+  clearTimeout(guardSelection.timer);
+  guardSelection.timer = setTimeout(release, ms);
+}
+
 function render() {
+  renderView();
+  animateEnter();
+}
+
+function renderView() {
   if (current.cleanup) {
     try { current.cleanup(); } catch (e) { console.error(e); }
   }
@@ -727,7 +761,8 @@ function viewAlbum(albumId, tab) {
         view: lastMapView[albumId],
         colorOf: c => memberIndex(albumId, c.angler_member_id),
         popupHtml: c => mapPopup(albumId, c),
-        onLongPress: latlng => {
+        onLongPress: (latlng, { touching }) => {
+          if (touching) guardSelection();
           location.hash = `#/a/${albumId}/new?lat=${latlng.lat.toFixed(6)}&lng=${latlng.lng.toFixed(6)}`;
         },
         onError: msg => toast(msg, 4000)
@@ -871,7 +906,9 @@ function viewForm(albumId, catchId, params) {
   else if (params.get('lat') && params.get('lng')) loc = parseLatLng(`${params.get('lat')},${params.get('lng')}`);
   const lastCatch = catchesOf(albumId).find(c => isFinite(c.lat));
   let photos = orig ? (orig.photo_ids || []).map(p => ({ kind: 'existing', f: p.f, t: p.t })) : [];
-  let dateTouched = editing;
+  // 日時：'photo'＝写真の撮影日時を使う（変更不可・既定）、'manual'＝自分で入力
+  let dateMode = 'photo';
+  const baseDate = orig ? new Date(orig.caught_at) : new Date(); // 写真に撮影日時が無いときに使う日時
   let dirty = false;
 
   const members = st.data.members;
@@ -889,13 +926,17 @@ function viewForm(albumId, catchId, params) {
           <label class="btn block" id="photo-add">${icon('camera')} 写真を撮る・選ぶ
             <input type="file" accept="image/*" multiple hidden id="photo-input">
           </label>
-          <p class="muted small">写真の撮影日時を「日時」に自動で入れます。写真の位置情報は使わず、保存もしません。</p>
+          <p class="muted small">写真の位置情報は使わず、保存もしません。</p>
         </section>
 
         <section class="card">
-          <label>日時 <span class="req">必須</span>
-            <input type="datetime-local" name="caught_at" required value="${esc(toLocalInput(orig ? new Date(orig.caught_at) : new Date()))}">
-          </label>
+          <h2>日時 <span class="req">必須</span></h2>
+          <div class="segmented" role="radiogroup" aria-label="日時の入れ方">
+            <label><input type="radio" name="date_mode" value="photo" checked><span>写真から</span></label>
+            <label><input type="radio" name="date_mode" value="manual"><span>自分で入力</span></label>
+          </div>
+          <input type="datetime-local" name="caught_at" required aria-label="日時" value="${esc(toLocalInput(baseDate))}">
+          <p class="muted small" id="date-hint"></p>
         </section>
 
         <section class="card">
@@ -942,7 +983,30 @@ function viewForm(albumId, catchId, params) {
   const created = []; // この画面で作ったプレビューURL（画面を閉じたら解放）
 
   form.addEventListener('input', () => { dirty = true; });
-  form.elements.caught_at.addEventListener('input', () => { dateTouched = true; });
+
+  // 日時の表示を今の入れ方に合わせる
+  const dateInput = form.elements.caught_at;
+  const dateHint = document.getElementById('date-hint');
+  const photoDate = () => (photos.find(p => p.kind === 'new' && p.takenAt) || {}).takenAt || null;
+  function syncDate() {
+    const auto = dateMode === 'photo';
+    dateInput.disabled = auto;
+    if (!auto) {
+      dateHint.textContent = '日時を自由に変えられます。';
+      return;
+    }
+    const d = photoDate();
+    dateInput.value = toLocalInput(d || baseDate);
+    const fallback = editing ? '保存済みの日時' : '今の日時';
+    dateHint.textContent = d ? '写真の撮影日時を使っています。'
+      : photos.some(p => p.kind === 'new') ? `写真に撮影日時が無いため、${fallback}を使います。`
+      : `写真を選ぶと撮影日時が入ります（それまでは${fallback}）。`;
+  }
+  form.querySelectorAll('input[name="date_mode"]').forEach(r => r.addEventListener('change', () => {
+    dateMode = r.value;
+    syncDate();
+    if (dateMode === 'manual') dateInput.focus();
+  }));
 
   function drawPhotos() {
     grid.innerHTML = photos.map((p, i) => `<div class="photo-item">
@@ -956,6 +1020,7 @@ function viewForm(albumId, catchId, params) {
     photos.splice(Number(d.dataset.del), 1);
     dirty = true;
     drawPhotos();
+    syncDate();
   });
   input.addEventListener('change', async () => {
     const files = Array.from(input.files || []);
@@ -967,12 +1032,8 @@ function viewForm(albumId, catchId, params) {
       for (const file of files.slice(0, room)) {
         const p = await preparePhoto(file);
         created.push(p.previewUrl);
+        if (dateMode === 'photo' && p.takenAt && !photoDate()) toast('写真の撮影日時を入れました');
         photos.push({ kind: 'new', ...p });
-        if (!dateTouched && !editing && p.takenAt) {
-          form.elements.caught_at.value = toLocalInput(p.takenAt);
-          dateTouched = true;
-          toast('写真の撮影日時を入れました');
-        }
       }
       dirty = true;
     } catch (e) {
@@ -980,9 +1041,11 @@ function viewForm(albumId, catchId, params) {
     } finally {
       busy(false);
       drawPhotos();
+      syncDate();
     }
   });
   drawPhotos();
+  syncDate();
 
   // 位置
   let picker = null;

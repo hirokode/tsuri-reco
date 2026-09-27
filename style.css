@@ -264,3 +264,44 @@ body:has(.map-page) #toast { bottom: calc(var(--tabbar-h) + 72px + var(--safe-bo
 .icon-edit-btns { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
 .icon-edit .btn { display: inline-flex; margin: 0; color: var(--text); font-size: 15px; }
 .icon-edit .btn.text { color: var(--danger); }
+
+/* ---------- 画面の切り替え ---------- */
+@keyframes enter-fwd { from { opacity: 0; transform: translateX(28px); } to { opacity: 1; transform: none; } }
+@keyframes enter-back { from { opacity: 0; transform: translateX(-28px); } to { opacity: 1; transform: none; } }
+@keyframes enter-fade { from { opacity: 0; } to { opacity: 1; } }
+main.enter-fwd { animation: enter-fwd .28s cubic-bezier(.2, .8, .2, 1); }
+main.enter-back { animation: enter-back .28s cubic-bezier(.2, .8, .2, 1); }
+main.enter-fade { animation: enter-fade .2s ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  main.enter-fwd, main.enter-back, main.enter-fade { animation: none; }
+}
+
+/* 地図の長押し：文字選択・画像の保存メニューを出さない。押した場所に波紋とピン */
+.leaflet-container, .map-hint { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.press-ripple { pointer-events: none; }
+.press-ripple::after {
+  content: ''; position: absolute; inset: 0; border-radius: 50%;
+  background: rgba(11,110,153,.35); border: 2px solid rgba(11,110,153,.7);
+  animation: ripple .5s ease-out forwards;
+}
+@keyframes ripple { from { transform: scale(.1); opacity: 1; } to { transform: scale(1); opacity: 0; } }
+.pin.drop span { animation: pin-drop .32s cubic-bezier(.3, 1.5, .5, 1) both; }
+@keyframes pin-drop { from { transform: translateY(-26px) rotate(-45deg); opacity: 0; } to { transform: rotate(-45deg); opacity: 1; } }
+/* 長押しから画面が切り替わった直後、押したままの指で文字が選択されないように */
+body.no-select { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+body.no-select input, body.no-select textarea { -webkit-user-select: text; user-select: text; }
+
+/* ---------- 日時の入れ方（写真から／自分で入力） ---------- */
+.segmented { display: flex; background: #eef1f4; border-radius: 10px; padding: 3px; margin-bottom: 10px; }
+.form .segmented label { position: relative; flex: 1; margin: 0; color: var(--text); }
+.segmented input { position: absolute; opacity: 0; width: 1px; height: 1px; min-height: 0; margin: 0; pointer-events: none; }
+.segmented span {
+  display: flex; align-items: center; justify-content: center; min-height: 38px;
+  border-radius: 8px; font-size: 14px; font-weight: 600; color: var(--muted); cursor: pointer;
+}
+.segmented input:checked + span { background: #fff; color: var(--sea-dark); box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+.segmented input:focus-visible + span { outline: 2px solid var(--sea); }
+/* iPhone の日時入力は幅が中身に合わせて広がり、枠が右にはみ出すので、幅を固定して左寄せにする */
+input[type="datetime-local"] { -webkit-appearance: none; appearance: none; min-width: 0; max-width: 100%; text-align: left; }
+input[type="datetime-local"]::-webkit-date-and-time-value { text-align: left; margin: 0; }
+input[type="datetime-local"]:disabled { background: #f1f4f6; color: var(--text); -webkit-text-fill-color: var(--text); opacity: 1; }
