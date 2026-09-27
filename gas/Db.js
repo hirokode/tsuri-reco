@@ -4,7 +4,7 @@
 // 列を増やすときは、ここの末尾に足す（既存の列の順番は変えない）。
 // 既存シートの見出し行には、ensureSheet_ が足りない列を末尾に自動で追加する。
 const SCHEMA = {
-  albums: ['album_id', 'name', 'created_at', 'drive_folder_id'],
+  albums: ['album_id', 'name', 'created_at', 'drive_folder_id', 'icon_photo'],
   members: ['member_id', 'album_id', 'display_name', 'token', 'joined_at'],
   catches: ['catch_id', 'album_id', 'caught_at', 'lat', 'lng', 'place_name', 'species', 'size_cm', 'weight_g', 'count',
     'angler_member_id', 'tide_name', 'tide_events', 'method', 'bait', 'memo', 'photo_ids',

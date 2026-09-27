@@ -43,6 +43,7 @@
 ### 4.1 ホーム（アルバム選択）
 - 参加中のアルバムを友達名で一覧表示（例：「〇〇との釣り」）
 - タップでアルバム内へ
+- 各アルバムの ✎ ボタンで、アルバム名・アイコン画像を編集（アイコン未設定なら最新の釣果の写真を表示）
 - 「＋新しいアルバム」：アルバム作成・招待リンク発行（P0）
 
 ### 4.2 アルバム内（下部タブ）
@@ -89,10 +90,10 @@
 - 写真スワイプ、全項目表示、小さい地図、編集・削除ボタン
 
 ### 4.5 設定
-- 表示名変更、自分の招待リンク表示、地図の初期レイヤー
+- アルバム名・アイコン画像の編集（ホームの ✎ と同じ画面）、表示名変更、自分の招待リンク表示、地図の初期レイヤー
 
 ## 5. データ（スプレッドシート）
-**albums**：album_id, name, created_at, drive_folder_id
+**albums**：album_id, name, created_at, drive_folder_id, icon_photo(JSON: アイコン画像 {f,t})
 **members**：member_id, album_id, display_name, token, joined_at
 **catches**：catch_id, album_id, caught_at, lat, lng, place_name, species, size_cm, weight_g, count, angler_member_id, tide_name, tide_events(JSON: 満干潮時刻), method, bait, memo, photo_ids(JSON), created_by, created_at, updated_by, updated_at, deleted(bool)
 
