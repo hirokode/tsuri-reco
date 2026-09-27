@@ -116,10 +116,13 @@ function readRows_(name) {
   return rows;
 }
 
+// 「=」で始まる文字は、書式がテキストでも数式として計算されてしまうので、先頭に ' を付けて文字として保存する
+// （' はセルの中身には残らず、読み出すときは元の文字に戻る）
 function toValues_(header, obj) {
   return header.map(function (h) {
     const v = obj[h];
-    return v === undefined || v === null ? '' : String(v);
+    const s = v === undefined || v === null ? '' : String(v);
+    return s.charAt(0) === '=' ? "'" + s : s;
   });
 }
 
