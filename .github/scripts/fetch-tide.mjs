@@ -70,7 +70,9 @@ async function main() {
   const stations = parseStations(html);
   console.log(`掲載地点：${stations.length}か所`);
   if (stations.length < MIN_STATIONS) {
-    console.log(html.slice(0, 3000));
+    const at = html.search(/<table/i);
+    console.log(`表の位置：${at}、行数：${html.split(/<tr[\s>]/i).length - 1}`);
+    console.log(html.slice(Math.max(0, at), at + 6000));
     throw new Error('掲載地点を読み取れませんでした（ページの形が変わった可能性があります）');
   }
   fs.mkdirSync(OUT, { recursive: true });
