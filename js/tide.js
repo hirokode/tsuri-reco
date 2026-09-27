@@ -91,7 +91,8 @@ function loadStations() {
   return stationsPromise;
 }
 
-// 1行＝1日：毎時潮位（3桁×24）・年月日（2桁×3）・地点記号・満潮（時刻4桁＋潮位3桁）×4・干潮×4。予測なしは 9999/999
+// 1行＝1日：毎時潮位（3桁×24）・年月日（2桁×3）・地点記号・満潮（時2桁＋分2桁＋潮位3桁）×4・干潮×4。
+// 数字は右詰めで空白が入る（例：「 4 5」＝4時5分）。予測なしは 9999/999
 function parseTideTxt(body, year) {
   const days = new Map();
   for (const line of body.split('\n')) {
@@ -103,9 +104,12 @@ function parseTideTxt(body, year) {
     [['満潮', 80], ['干潮', 108]].forEach(([type, start]) => {
       for (let i = 0; i < 4; i++) {
         const p = start + i * 7;
-        const t = line.slice(p, p + 4).trim();
-        if (!t || t === '9999') continue;
-        events.push({ type, hm: Number(t), h: num(p + 4, p + 7) });
+        if (line.slice(p, p + 4) === '9999') continue;
+        const hh = num(p, p + 2);
+        const mm = num(p + 2, p + 4);
+        const h = num(p + 4, p + 7);
+        if (![hh, mm, h].every(isFinite)) continue;
+        events.push({ type, min: hh * 60 + mm, h });
       }
     });
     const key = `${year}-${String(num(74, 76)).padStart(2, '0')}-${String(num(76, 78)).padStart(2, '0')}`;
@@ -177,7 +181,7 @@ export async function tideLevel(lat, lng, date) {
   const level = Math.round(a + (b - a) * (pos - h0));
 
   const toEvents = d => (d ? d.events.map(e => ({
-    type: e.type, h: e.h, ms: d.start + Math.floor(e.hm / 100) * HOUR + (e.hm % 100) * 60000
+    type: e.type, h: e.h, ms: d.start + e.min * 60000
   })) : []);
   const dayEvents = toEvents(today).sort((x, y) => x.ms - y.ms);
   const all = [...toEvents(prevDay), ...dayEvents, ...toEvents(nextDay)].sort((x, y) => x.ms - y.ms);
