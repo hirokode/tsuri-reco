@@ -1,0 +1,55 @@
+# 気象庁「潮位表」のデータ（全国の掲載地点・1年分の潮位）を data/tide/ に取り込む。
+# 毎月1日に自動で実行し、変わっていればコミットする（新しい年の潮位表が出たら自動で入る）。
+# スクリプトを変えたブランチへの push でも実行して、その場で動作を確かめられるようにしている。
+name: 潮位表を更新
+
+on:
+  schedule:
+    - cron: '17 3 1 * *'   # 毎月1日 12:17（日本時間）
+  workflow_dispatch:
+  push:
+    branches: ['claude/**']
+    paths: ['.github/scripts/fetch-tide.mjs', '.github/workflows/update-tide.yml']
+
+permissions:
+  contents: write
+  pages: write
+
+concurrency:
+  group: update-tide-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 気象庁から潮位表を取得
+        run: node .github/scripts/fetch-tide.mjs
+
+      - name: 変わっていればコミット
+        run: |
+          git add data/tide
+          if git diff --cached --quiet; then
+            echo "変更なし"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "潮位表のデータを更新（気象庁）"
+          git push
+
+      # ボットの push では GitHub Pages が作り直されないので、main のときは作り直しを頼む
+      - name: GitHub Pages を更新
+        if: github.ref == 'refs/heads/main'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -sS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/pages/builds"
