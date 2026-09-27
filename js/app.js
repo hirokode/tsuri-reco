@@ -15,6 +15,7 @@ import {
   getSettings, saveSettings, getAlbumCache, setAlbumCache, getHomeCache, setHomeCache
 } from './api.js';
 import { MAX_PHOTOS, photoImg, preparePhoto, prepareIcon, blobToBase64 } from './photos.js';
+import { tideForDate } from './tide.js';
 import { LAYERS, mapReady, createCatchMap, createPickerMap, createMiniMap, getCurrentPosition } from './map.js';
 
 const $app = document.getElementById('app');
@@ -966,6 +967,7 @@ function viewForm(albumId, catchId, params) {
           <label>潮
             <select name="tide_name"><option value="">（未選択）</option>${TIDES.map(t => `<option ${v.tide_name === t ? 'selected' : ''}>${t}</option>`).join('')}</select>
           </label>
+          <p class="muted small tide-hint" id="tide-hint"></p>
           <label>釣り方・仕掛け<input name="method" maxlength="100" value="${esc(v.method)}"></label>
           <label>エサ／ルアー<input name="bait" maxlength="100" value="${esc(v.bait)}"></label>
           <label>メモ<textarea name="memo" maxlength="2000" rows="3">${esc(v.memo)}</textarea></label>
@@ -988,11 +990,33 @@ function viewForm(albumId, catchId, params) {
   const dateInput = form.elements.caught_at;
   const dateHint = document.getElementById('date-hint');
   const photoDate = () => (photos.find(p => p.kind === 'new' && p.takenAt) || {}).takenAt || null;
+  // 潮：日付の月齢から潮名を計算する。新規登録では自動で入れる（手で選び直したらそのまま）。
+  // 編集では保存済みの値を変えず、計算結果を案内だけする
+  const tideSelect = form.elements.tide_name;
+  const tideHint = document.getElementById('tide-hint');
+  let tideTouched = editing;
+  tideSelect.addEventListener('change', () => { tideTouched = true; syncTide(); });
+  function syncTide() {
+    const d = new Date(dateInput.value);
+    if (!dateInput.value || isNaN(d)) {
+      tideHint.textContent = '';
+      return;
+    }
+    const t = tideForDate(d);
+    if (!tideTouched) tideSelect.value = t.name;
+    const calc = `この日の潮は「${t.name}」（月齢${t.age.toFixed(1)}から計算）。`;
+    tideHint.textContent = tideSelect.value === t.name
+      ? `${calc}${tideTouched ? '' : '自動で入れました。'}渓流など潮に関係ない釣りは「（未選択）」にしてください。`
+      : calc;
+  }
+  dateInput.addEventListener('change', syncTide);
+
   function syncDate() {
     const auto = dateMode === 'photo';
     dateInput.disabled = auto;
     if (!auto) {
       dateHint.textContent = '日時を自由に変えられます。';
+      syncTide();
       return;
     }
     const d = photoDate();
@@ -1001,6 +1025,7 @@ function viewForm(albumId, catchId, params) {
     dateHint.textContent = d ? '写真の撮影日時を使っています。'
       : photos.some(p => p.kind === 'new') ? `写真に撮影日時が無いため、${fallback}を使います。`
       : `写真を選ぶと撮影日時が入ります（それまでは${fallback}）。`;
+    syncTide();
   }
   form.querySelectorAll('input[name="date_mode"]').forEach(r => r.addEventListener('change', () => {
     dateMode = r.value;
