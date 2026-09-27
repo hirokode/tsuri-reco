@@ -76,7 +76,7 @@
 | 魚種 | 必須 | 過去の入力から候補表示＋自由入力 |
 | サイズ（cm） | 任意 | |
 | 重さ（g） | 任意 | |
-| 匹数 | 必須 | 「釣れた回」ごとに時刻と匹数を入れる（例：1回目 9:40 2匹、2回目 10:30 1匹）。回は時刻順に自動で並べ替え、日時＝最初の回、匹数＝合計。初期値は1回・1匹 |
+| 匹数 | 必須 | 「釣れた回」ごとに時刻と匹数を入れる（例：1回目 9:40 2匹、2回目 10:30 1匹）。回は時刻順に自動で並べ替え、日時＝最初の回、匹数＝合計。初期値は1回・1匹。写真は回ごとに5枚まで付けられ、「写真から」のときはその回の時刻に撮影日時を入れる |
 | 釣った人 | 必須 | アルバムメンバーから選択、初期値＝自分 |
 | 潮 | 自動 | 潮名（大潮／中潮等）は日付の月齢から計算して自動入力（新規登録のみ。手動修正可・渓流などは未選択に）。潮を選んだ釣果は、いちばん近い気象庁の潮位表掲載地点の予測（その時刻の潮位・上げ下げ・満干潮時刻）を登録画面と詳細画面に表示（保存はしない） |
 | 釣り方・仕掛け | 任意 | 過去入力から候補 |
@@ -95,7 +95,7 @@
 ## 5. データ（スプレッドシート）
 **albums**：album_id, name, created_at, drive_folder_id, icon_photo(JSON: アイコン画像 {f,t})
 **members**：member_id, album_id, display_name, token, joined_at
-**catches**：catch_id, album_id, caught_at, lat, lng, place_name, species, size_cm, weight_g, count, angler_member_id, tide_name, tide_events(JSON: 満干潮時刻), method, bait, memo, photo_ids(JSON), created_by, created_at, updated_by, updated_at, deleted(bool), hits(JSON: 釣れた回 [{at, count}]。2回以上のときだけ)
+**catches**：catch_id, album_id, caught_at, lat, lng, place_name, species, size_cm, weight_g, count, angler_member_id, tide_name, tide_events(JSON: 満干潮時刻), method, bait, memo, photo_ids(JSON), created_by, created_at, updated_by, updated_at, deleted(bool), hits(JSON: 釣れた回 [{at, count, photos}]。2回以上のときだけ)
 
 - 削除は論理削除（deleted=true）
 - ID はUUID

@@ -2,7 +2,8 @@
 // そのトークンが属するアルバムのデータだけを扱う。
 
 const MAX_ALBUMS_PER_DAY = 20; // アプリ全体で1日に作れるアルバム数（乱用対策）
-const MAX_PHOTOS = 5;
+const MAX_PHOTOS = 5;        // 1回（釣れた回）あたりの写真の枚数
+const MAX_PHOTOS_TOTAL = 50; // 1件の釣果の写真の合計
 const MAX_HITS = 50; // 1件の釣果に入れられる「釣れた回」の数
 const TIDE_NAMES = ['', '大潮', '中潮', '小潮', '長潮', '若潮'];
 
@@ -216,11 +217,8 @@ function cleanCatch_(c, members) {
   const tide = text_(c.tide_name, 10, '潮', false);
   if (TIDE_NAMES.indexOf(tide) < 0) throw apiError_('invalid', '潮の値が正しくありません');
   const photos = Array.isArray(c.photo_ids) ? c.photo_ids : [];
-  if (photos.length > MAX_PHOTOS) throw apiError_('invalid', '写真は' + MAX_PHOTOS + '枚までです');
-  const cleanPhotos = photos.map(function (p) {
-    if (!p || !validFileId_(p.f) || !validFileId_(p.t)) throw apiError_('invalid', '写真の情報が正しくありません');
-    return { f: p.f, t: p.t };
-  });
+  if (photos.length > MAX_PHOTOS_TOTAL) throw apiError_('invalid', '写真は合計' + MAX_PHOTOS_TOTAL + '枚までです');
+  let cleanPhotos = cleanPhotoList_(photos);
   let count = num_(c.count, 1, 9999, '匹数', true);
   if (Math.floor(count) !== count) throw apiError_('invalid', '匹数は整数で入力してください');
   // 釣れた回（時刻と匹数）。時刻順に並べ、日時＝最初の回、匹数＝合計にそろえる
@@ -228,6 +226,11 @@ function cleanCatch_(c, members) {
   if (hits.length) {
     caughtAt = hits[0].at;
     count = hits.reduce(function (sum, h) { return sum + h.count; }, 0);
+    // 回ごとに写真が付いていれば、釣果の写真＝各回の写真を時刻順につなげたもの
+    if (hits.some(function (h) { return h.photos; })) {
+      cleanPhotos = [].concat.apply([], hits.map(function (h) { return h.photos || []; }));
+      if (cleanPhotos.length > MAX_PHOTOS_TOTAL) throw apiError_('invalid', '写真は合計' + MAX_PHOTOS_TOTAL + '枚までです');
+    }
   }
   return {
     caught_at: caughtAt,
@@ -248,6 +251,13 @@ function cleanCatch_(c, members) {
   };
 }
 
+function cleanPhotoList_(list) {
+  return list.map(function (p) {
+    if (!p || !validFileId_(p.f) || !validFileId_(p.t)) throw apiError_('invalid', '写真の情報が正しくありません');
+    return { f: p.f, t: p.t };
+  });
+}
+
 function cleanHits_(list) {
   if (!Array.isArray(list)) return [];
   if (list.length > MAX_HITS) throw apiError_('invalid', '釣れた回は' + MAX_HITS + '回までです');
@@ -256,7 +266,12 @@ function cleanHits_(list) {
     if (isNaN(Date.parse(at))) throw apiError_('invalid', '釣れた時刻の形式が正しくありません');
     const count = num_(h.count, 1, 9999, '匹数', true);
     if (Math.floor(count) !== count) throw apiError_('invalid', '匹数は整数で入力してください');
-    return { at: at, count: count };
+    const hit = { at: at, count: count };
+    if (Array.isArray(h.photos)) {
+      if (h.photos.length > MAX_PHOTOS) throw apiError_('invalid', '写真は1回につき' + MAX_PHOTOS + '枚までです');
+      hit.photos = cleanPhotoList_(h.photos);
+    }
+    return hit;
   });
   hits.sort(function (a, b) { return Date.parse(a.at) - Date.parse(b.at); });
   return hits;
