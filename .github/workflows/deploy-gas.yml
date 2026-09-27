@@ -1,0 +1,56 @@
+# gas/ の変更が main に入ったら、Apps Script に push して既存デプロイを上書きする。
+# 必要な GitHub Secrets（値はリポジトリに書かない）:
+#   CLASPRC_JSON      … PC の ~/.clasprc.json の中身（clasp の認証情報）
+#   GAS_SCRIPT_ID     … gas/.clasp.json の scriptId
+#   GAS_DEPLOYMENT_ID … 本番デプロイのID（/s/ と /exec に挟まれた部分）
+name: GASにデプロイ
+
+on:
+  push:
+    branches: [main]
+    paths: ['gas/**']
+  workflow_dispatch:
+
+concurrency:
+  group: gas-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: clasp を入れる
+        run: npm install -g @google/clasp@2.4.2
+
+      - name: 認証情報とプロジェクト設定を作る
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          GAS_SCRIPT_ID: ${{ secrets.GAS_SCRIPT_ID }}
+          GAS_DEPLOYMENT_ID: ${{ secrets.GAS_DEPLOYMENT_ID }}
+        run: |
+          if [ -z "$CLASPRC_JSON" ] || [ -z "$GAS_SCRIPT_ID" ] || [ -z "$GAS_DEPLOYMENT_ID" ]; then
+            echo "GitHub Secrets（CLASPRC_JSON / GAS_SCRIPT_ID / GAS_DEPLOYMENT_ID）が未登録です"; exit 1
+          fi
+          printf '%s' "$CLASPRC_JSON" > ~/.clasprc.json
+          printf '{"scriptId":"%s","rootDir":"."}' "$GAS_SCRIPT_ID" > gas/.clasp.json
+
+      - name: clasp push
+        working-directory: gas
+        run: clasp push -f
+
+      - name: 既存デプロイを上書き（URLは変わらない）
+        working-directory: gas
+        env:
+          GAS_DEPLOYMENT_ID: ${{ secrets.GAS_DEPLOYMENT_ID }}
+          MSG: ${{ github.event.head_commit.message || '手動デプロイ' }}
+        run: clasp deploy -i "$GAS_DEPLOYMENT_ID" -d "$(printf '%s' "$MSG" | head -n1 | cut -c1-100)"
+
+      - name: 認証情報を消す
+        if: always()
+        run: rm -f ~/.clasprc.json gas/.clasp.json

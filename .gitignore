@@ -1,0 +1,24 @@
+# clasp（スクリプトID・認証情報を含む）
+.clasp.json
+**/.clasp.json
+.clasprc.json
+
+# ID・URL・パスワードのメモ（秘密情報）
+*URL*.txt
+*url*.txt
+Github_pass*
+*_pass*
+*[Pp]assword*
+*パス*
+*.secret
+.env
+*.env
+*.local.*
+
+# その他
+node_modules/
+Thumbs.db
+desktop.ini
+Desktop.ini
+.DS_Store
+~$*
