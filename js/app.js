@@ -726,9 +726,9 @@ function albumTopbar(albumId) {
 function tabbar(albumId, active) {
   const tab = (key, label, href) => `<a class="tab ${active === key ? 'active' : ''}" href="${href}" ${active === key ? 'aria-current="page"' : ''}>${icon(key)}<span>${label}</span></a>`;
   return `<nav class="tabbar">
+    ${tab('trip', '釣行', `#/a/${albumId}/trip`)}
     ${tab('map', '地図', `#/a/${albumId}/map`)}
     ${tab('list', '一覧', `#/a/${albumId}/list`)}
-    ${tab('trip', '釣行', `#/a/${albumId}/trip`)}
   </nav>`;
 }
 
@@ -1787,24 +1787,25 @@ function viewTrip(albumId) {
     if (trip) {
       const started = new Date(trip.started_at);
       const catches = myTripCatches(trip);
-      html += `<section class="card trip-live">
+      html += `<section class="trip-hero live">
           <p class="trip-state"><span class="rec-dot"></span>釣行中</p>
-          <p class="trip-time">${hm(started)} 開始・<b>${fmtDuration(Date.now() - started)}</b>経過</p>
-          <p class="muted small">記録した地点 ${trip.points.length}か所（最後：${trip.points.length ? hm(new Date(lastPointTime(trip))) : 'なし'}）</p>
-          <button class="hit-btn" id="hit-btn">📍 釣れた！</button>
-          <p class="muted small center">押すと、今の時刻と現在地だけの下書きを作ります。写真や魚種はあとから入れられます。</p>
-          <div class="row">
-            <a class="btn grow" href="#/a/${esc(albumId)}/new">${icon('plus')} 釣果を登録</a>
-            <button class="btn danger grow" id="end-btn">釣行を終了</button>
-          </div>
+          <p class="trip-time"><b>${fmtDuration(Date.now() - started)}</b><span>${hm(started)} 開始・記録 ${trip.points.length}か所</span></p>
+          <button class="orb coral" id="hit-btn"><span class="orb-icon">📍</span>釣れた！</button>
+          <p class="hero-note">押すと、今の時刻と現在地だけの下書きを作ります</p>
         </section>
+        <div class="row trip-actions">
+          <a class="btn grow" href="#/a/${esc(albumId)}/new">${icon('plus')} 釣果を登録</a>
+          <button class="btn danger grow" id="end-btn">釣行を終了</button>
+        </div>
         <h2 class="section-title">この釣行の釣果 <span class="muted small">${catches.length}件</span></h2>
         ${catches.length ? `<div class="catch-list">${catches.map(c => catchCard(albumId, c)).join('')}</div>` : '<p class="muted small">まだありません。</p>'}`;
     } else {
-      html += `<section class="card trip-start">
-          <button class="btn primary block big" id="start-btn">${icon('trip')} 釣行を開始</button>
-          <p class="muted small">開始・終了の時刻と位置を記録して、釣行カードを作ります。位置を記録するのは、開始・終了、アプリを開いたとき、「釣れた！」・釣果登録のときだけです（自分の位置のみ・釣行中のみ。見られるのはアルバムのメンバーだけ）。</p>
-        </section>`;
+      html += `<section class="trip-hero">
+          <p class="hero-greet">今日はどこで釣る？</p>
+          <button class="orb" id="start-btn"><span class="orb-icon">🎣</span>釣行を<br>開始</button>
+          <p class="hero-note">開始・終了の時刻と位置を記録して、釣行カードを作ります</p>
+        </section>
+        <p class="muted small trip-privacy">位置を記録するのは、開始・終了、アプリを開いたとき、「釣れた！」・釣果登録のときだけです（自分の位置のみ・釣行中のみ。見られるのはアルバムのメンバーだけ）。</p>`;
     }
     const trips = tripsOf(albumId);
     html += `<h2 class="section-title">釣行カード</h2>`;
