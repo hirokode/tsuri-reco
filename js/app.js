@@ -1354,7 +1354,7 @@ function viewForm(albumId, catchId, params) {
           <input type="datetime-local" class="hit-at" aria-label="時刻" ${f('at')} value="${esc(h.at)}" ${locked(h) ? 'disabled' : ''}>
           <p class="time-note">${esc(timeNote(h))}</p>
         </div>
-        <label>匹数<input type="number" inputmode="numeric" min="1" step="1" ${f('count')} value="${esc(h.count)}"></label>
+        <label class="count-field"><span class="time-head"><span class="field-label">匹数</span></span><input type="number" inputmode="numeric" min="1" step="1" ${f('count')} value="${esc(h.count)}"></label>
       </div>
       <label>魚種 <span class="req">必須</span><input maxlength="50" list="species-list" ${f('species')} value="${esc(h.species)}" placeholder="例：アジ"></label>
       <div class="grid2">
@@ -1368,7 +1368,7 @@ function viewForm(albumId, catchId, params) {
         <label>潮
           <select ${f('tide_name')}><option value="">（未選択）</option>${TIDES.map(t => `<option ${h.tide_name === t ? 'selected' : ''}>${t}</option>`).join('')}</select>
         </label>
-        <div class="tide-level-field"><span class="field-label">潮位（予測）</span><div class="readout" data-tide-level>ー</div></div>
+        <div class="tide-level-field"><span class="field-label">潮位（気象庁の予測）</span><div class="readout" data-tide-level>ー</div></div>
       </div>
       <p class="muted small tide-hint" data-tide-hint></p>
       <label>釣り方・仕掛け<input maxlength="100" ${f('method')} value="${esc(h.method)}"></label>
@@ -1565,7 +1565,7 @@ function viewForm(albumId, catchId, params) {
         return;
       }
       const now = tideNowText(r, d.getTime());
-      el.innerHTML = `<b>${esc(now.level)}</b><span class="muted small">${esc(r.station.name)}（約${Math.round(r.km)}km）${now.since ? '・' + esc(now.since) : ''}</span>`;
+      el.innerHTML = `<b>${esc(now.level.replace(/^約/, ''))}</b>`;
     });
   }
 
