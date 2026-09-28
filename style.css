@@ -492,6 +492,15 @@ body:has(.trip-page) #toast { top: calc(var(--topbar-h) + var(--safe-top) + 12px
 
 /* ---------- 月間潮表 ---------- */
 .tm-head select { margin-bottom: 4px; }
+.tm-catches { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 8px; }
+.tm-catch { border: 1.5px solid var(--line); border-radius: 12px; padding: 6px 10px; background: #fbfdfe; transition: border-color .15s, background .15s; }
+.tm-catch.on { border-color: #9fd3e4; background: var(--sea-light); }
+.form .tm-check, .tm-check { display: flex; align-items: flex-start; gap: 10px; margin: 0; padding: 4px 0; font-size: 14px; font-weight: 500; color: var(--text); cursor: pointer; }
+.tm-check input { width: 20px; height: 20px; min-height: 0; margin: 1px 0 0; flex: none; accent-color: var(--sea-dark); }
+.tm-check.small { font-size: 13px; }
+.tm-catch-title { font-weight: 700; }
+.tm-hits { margin: 2px 0 2px 30px; border-top: 1px dashed #c9dfe7; padding-top: 2px; }
+.tm-others-label { margin-top: 10px; }
 .tm-pats { list-style: none; margin: 4px 0 8px; padding: 0; font-size: 14px; }
 .tm-pats li { padding: 4px 0; border-top: 1px solid var(--line); }
 .tm-pats li:first-child { border-top: 0; }
