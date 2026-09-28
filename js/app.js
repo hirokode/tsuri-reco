@@ -18,6 +18,7 @@ import {
 } from './api.js';
 import { MAX_PHOTOS, photoImg, preparePhoto, prepareIcon, blobToBase64 } from './photos.js';
 import { tideForDate, tideLevel, tideSeries, tideMonth, tideStageAt, stageLabel, jstTime } from './tide.js';
+import { sunMoonDay } from './astro.js';
 import {
   activeTrip, startTrip, endTrip, recordPoint, recordOpen, addHitDraft, removeDraft, outbox, flushOutbox,
   staleState, estimatePoint, lastPointTime
@@ -2049,13 +2050,106 @@ function tideMiniSvg(day, lo, hi) {
   const pts = day.samples.filter(p => p.h != null);
   const line = pts.map((p, i) => `${i ? 'L' : 'M'}${f(x(p.t))},${f(y(p.h))}`).join('');
   const base = H - B;
-  return `<svg class="tm-svg" viewBox="0 0 ${W} ${H}" data-day="${day.d}" role="img" aria-label="${day.d}日の潮位">
+  return `<svg class="tm-svg" viewBox="0 0 ${W} ${H}" data-day="${day.d}" data-w="${W}" data-l="${L}" data-r="${R}" data-top="${T}" data-bottom="${H - B}" role="img" aria-label="${day.d}日の潮位">
     <g class="tm-grid">${[6, 12, 18].map(hr => `<line x1="${f(x(day.start + hr * 3600000))}" x2="${f(x(day.start + hr * 3600000))}" y1="${T}" y2="${base}"/>`).join('')}</g>
     <line class="tm-base" x1="${L}" x2="${W - R}" y1="${base}" y2="${base}"/>
     ${day.windows.map(w => `<rect class="tm-band g${w.grade}" x="${f(x(w.from))}" y="${T}" width="${f(Math.max(3, x(w.to + SAMPLE_MS) - x(w.from)))}" height="${base - T}" rx="2"/>`).join('')}
     <path class="tm-line" d="${line}"/>
     <g class="tm-xl">${[6, 12, 18].map(hr => `<text x="${f(x(day.start + hr * 3600000))}" y="${H - 3}">${hr}時</text>`).join('')}</g>
     <g class="tm-cross" hidden><line y1="${T}" y2="${base}"/><circle r="3.5"/></g>
+  </svg>`;
+}
+
+// 1日の大きな潮位グラフ（カレンダーで選んだ日）。夜の海のような濃い背景に、
+// 上から「月が出ている時間」「太陽が出ている時間」の帯、潮位の線、満潮・干潮の吹き出し（時刻と潮位）、
+// 似ている時間の帯、今の時刻の線。縦軸は月で共通
+const BIG = { W: 340, H: 300, L: 34, R: 8, T: 46, B: 22, PAD: 34 };
+function tideDaySvg(day, lo, hi, astro) {
+  const { W, H, L, R, T, B, PAD } = BIG;
+  const base = H - B;
+  const top = T + PAD;          // 月の最高潮位の高さ（上に吹き出しの場所を空ける）
+  const bottom = base - PAD;    // 月の最低潮位の高さ（下に吹き出しの場所を空ける）
+  const end = day.start + 86400000;
+  const x = t => L + (Math.min(Math.max(t, day.start), end) - day.start) / 86400000 * (W - L - R);
+  const y = h => top + (hi - h) / (hi - lo) * (bottom - top);
+  const hAt = py => hi - (py - top) / (bottom - top) * (hi - lo);
+  const f = n => n.toFixed(1);
+  const span = hAt(T) - hAt(base);
+  const step = span > 320 ? 100 : span > 160 ? 50 : span > 80 ? 20 : 10;
+  const ticks = [];
+  for (let v = Math.ceil(hAt(base) / step) * step; v <= hAt(T); v += step) ticks.push(v);
+  // 潮位表の毎時の値と満潮・干潮を、なめらかな曲線（Catmull-Rom）でつなぐ（満干潮の近く20分以内の毎時の値は使わない）
+  const near = t => day.events.some(e => Math.abs(e.ms - t) < 20 * 60000);
+  const knots = [...day.samples.filter((p, i) => p.h != null && i % 6 === 0 && !near(p.t)), ...day.events.map(e => ({ t: e.ms, h: e.h }))]
+    .sort((a, b) => a.t - b.t)
+    .map(p => [x(p.t), y(p.h)]);
+  const line = knots.map((p, i) => {
+    if (!i) return `M${f(p[0])},${f(p[1])}`;
+    const p0 = knots[i - 2] || knots[i - 1];
+    const p1 = knots[i - 1];
+    const p3 = knots[i + 1] || p;
+    const c1 = [p1[0] + (p[0] - p0[0]) / 6, p1[1] + (p[1] - p0[1]) / 6];
+    const c2 = [p[0] - (p3[0] - p1[0]) / 6, p[1] - (p3[1] - p1[1]) / 6];
+    return `C${f(c1[0])},${f(c1[1])} ${f(c2[0])},${f(c2[1])} ${f(p[0])},${f(p[1])}`;
+  }).join('');
+  const hours = [0, 3, 6, 9, 12, 15, 18, 21, 24];
+
+  // 月・太陽の帯（出ている区間）と、出・入りの時刻
+  const bar = (body, cls, row, label) => {
+    const by = row === 0 ? 6 : 24;
+    const times = [...body.rise.map(t => ({ t, anchor: 'start' })), ...body.set.map(t => ({ t, anchor: 'end' }))];
+    return `<text class="td-bar-label" x="${L - 5}" y="${by + 10}">${label}</text>
+      <rect class="td-track" x="${L}" y="${by}" width="${W - L - R}" height="14" rx="3"/>
+      ${body.spans.map(sp => `<rect class="${cls}" x="${f(x(sp.from))}" y="${by}" width="${f(Math.max(2, x(sp.to) - x(sp.from)))}" height="14" rx="3"/>`).join('')}
+      ${times.map(m => {
+        const tx = m.anchor === 'start' ? Math.min(x(m.t) + 3, W - R - 30) : Math.max(x(m.t) - 3, L + 30);
+        return `<text class="td-bar-time" x="${f(tx)}" y="${by + 10.5}" text-anchor="${m.anchor}">${jstTime(m.t)}</text>`;
+      }).join('')}`;
+  };
+  // 夜（太陽が出ていない時間）は少し暗く
+  const nights = [];
+  let from = day.start;
+  for (const sp of astro.sun.spans) {
+    if (sp.from > from) nights.push({ from, to: sp.from });
+    from = sp.to;
+  }
+  if (from < end) nights.push({ from, to: end });
+
+  // 満潮・干潮の吹き出し：満潮は山の上、干潮は谷の下
+  const callouts = day.events.map(e => {
+    const cx = Math.min(Math.max(x(e.ms), L + 26), W - R - 26);
+    const cy = y(e.h);
+    const up = e.type === '満潮';
+    const by = up ? cy - 9 - 28 : cy + 9;
+    const tip = up ? `M${f(x(e.ms) - 4)},${f(cy - 9)}L${f(x(e.ms))},${f(cy - 4)}L${f(x(e.ms) + 4)},${f(cy - 9)}Z`
+      : `M${f(x(e.ms) - 4)},${f(cy + 9)}L${f(x(e.ms))},${f(cy + 4)}L${f(x(e.ms) + 4)},${f(cy + 9)}Z`;
+    return `<g class="td-call ${up ? 'high' : 'low'}"><rect x="${f(cx - 25)}" y="${f(by)}" width="50" height="28" rx="6"/><path d="${tip}"/>
+      <text x="${f(cx)}" y="${f(by + 12)}" class="td-call-time">${jstTime(e.ms)}</text>
+      <text x="${f(cx)}" y="${f(by + 24)}">${Math.round(e.h)}cm</text></g>`;
+  }).join('');
+
+  const now = Date.now();
+  const nowH = now >= day.start && now < end ? day.samples.find(p => Math.abs(p.t - now) <= SAMPLE_MS / 2) : null;
+  return `<svg class="tm-svg td-svg" viewBox="0 0 ${W} ${H}" data-day="${day.d}" data-w="${W}" data-l="${L}" data-r="${R}" data-top="${top}" data-bottom="${bottom}" role="img" aria-label="${day.d}日の潮位">
+    ${bar(astro.moon, 'td-moon', 0, '月')}
+    ${bar(astro.sun, 'td-sun', 1, '日')}
+    ${nights.map(n => `<rect class="td-night" x="${f(x(n.from))}" y="${T}" width="${f(x(n.to) - x(n.from))}" height="${base - T}"/>`).join('')}
+    <g class="td-grid">
+      ${ticks.map(v => `<line x1="${L}" x2="${W - R}" y1="${f(y(v))}" y2="${f(y(v))}"/>`).join('')}
+      ${hours.map(hr => `<line x1="${f(x(day.start + hr * 3600000))}" x2="${f(x(day.start + hr * 3600000))}" y1="${T}" y2="${base}"/>`).join('')}
+    </g>
+    <g class="td-yl">${ticks.map(v => `<text x="${L - 5}" y="${f(y(v) + 3.5)}">${v}</text>`).join('')}</g>
+    ${day.windows.map(w => {
+      const wx = f(x(w.from));
+      const ww = f(Math.max(3, x(w.to + SAMPLE_MS) - x(w.from)));
+      return `<rect class="td-band g${w.grade}" x="${wx}" y="${T}" width="${ww}" height="${base - T}"/><rect class="td-band-cap g${w.grade}" x="${wx}" y="${T}" width="${ww}" height="4"/>`;
+    }).join('')}
+    <path class="td-line" d="${line}"/>
+    ${nowH && nowH.h != null ? `<line class="td-now" x1="${f(x(now))}" x2="${f(x(now))}" y1="${T}" y2="${base}"/><circle class="td-now-dot" cx="${f(x(now))}" cy="${f(y(nowH.h))}" r="4.5"/>` : ''}
+    ${callouts}
+    <g class="td-xl">${hours.map(hr => `<text x="${f(x(day.start + hr * 3600000))}" y="${H - 6}">${hr}</text>`).join('')}</g>
+    <text class="td-unit" x="${L - 5}" y="${H - 6}">時</text>
+    <g class="tm-cross" hidden><line y1="${T}" y2="${base}"/><circle r="4"/></g>
   </svg>`;
 }
 
@@ -2068,7 +2162,7 @@ function viewTideMonth(albumId, params) {
   const filters = { name: false, flow: false }; // 絞り込み（オンにした条件をすべて満たす日だけ）
   let showPast = false;                      // 今日より前の日は、ボタンを押すまで隠す
   let view = 'cal'; // 最初はカレンダー
-  let selected = null;                       // カレンダーで選んだ日
+  let selected = Number(params.get('d')) || null; // カレンダーで選んだ日
   let req = 0;
   let result = null; // { spotKey, month, days, lo, hi }
 
@@ -2135,12 +2229,11 @@ function viewTideMonth(albumId, params) {
     const n = ++req;
     const [patterns, month] = await Promise.all([spotPatterns(spot), tideMonth(spot.lat, spot.lng, year, mon)]);
     if (n !== req) return;
-    result = { spotKey: spot.key, sig: signature(spot), patterns, month, days: null };
+    result = { spotKey: spot.key, sig: signature(spot), lat: spot.lat, lng: spot.lng, patterns, month, days: null };
     if (month) {
       result.days = tideDayRows(month, patterns, year, mon);
       const hs = result.days.flatMap(d => d.samples.map(p => p.h)).filter(h => h != null);
       result.lo = Math.floor(Math.min(...hs) / 10) * 10;
-      selected = null;
       result.hi = Math.ceil(Math.max(...hs) / 10) * 10;
     }
     drawPatterns(patterns);
@@ -2181,6 +2274,40 @@ function viewTideMonth(albumId, params) {
       </div>
       ${tideMiniSvg(day, result.lo, result.hi)}
       <p class="tm-tip muted small">${day.windows.map(w => `${w.grade === 2 ? '◎' : '○'} ${jstTime(w.from)}〜${jstTime(w.to + SAMPLE_MS)}（${new Date(w.p.t).getMonth() + 1}/${new Date(w.p.t).getDate()}の${esc(w.p.label)}・${w.p.level}cm に似ている）`).join('<br>')}</p>
+    </section>`;
+  }
+
+  // カレンダーで選んだ日：大きなグラフ。前後の日へ移れる（月をまたぐときは、その月の表を開く）
+  function dayBigHtml(day, days) {
+    const dt = new Date(year, mon - 1, day.d);
+    const todayStart = new Date(new Date().setHours(0, 0, 0, 0)).getTime();
+    const navBtn = dir => {
+      const target = new Date(year, mon - 1, day.d + dir);
+      const label = dir < 0 ? `‹ ${target.getDate()}日` : `${target.getDate()}日 ›`;
+      if (target.getTime() < todayStart && !showPast) return `<span class="td-nav off">${label}</span>`;
+      if (target.getMonth() !== mon - 1) return `<a class="td-nav" href="${monthHref(result.spotKey, dir)}&d=${target.getDate()}">${label}</a>`;
+      return `<button type="button" class="td-nav" data-daynav="${target.getDate()}">${label}</button>`;
+    };
+    const astro = sunMoonDay(result.lat, result.lng, day.start, day.start + 86400000);
+    const now = Date.now();
+    let nowText = '';
+    if (now >= day.start && now < day.start + 86400000) {
+      const h = result.month.levelAt(now);
+      const st = tideStageAt(result.month.events, now);
+      if (h != null && st) nowText = `<span class="td-now-text">現在 <b>${Math.round(h)}cm</b>・${st.dir}${st.s.toFixed(1)}分</span>`;
+    }
+    return `<section class="td-card" data-card="${day.d}">
+      <div class="td-head">
+        ${navBtn(-1)}
+        <div class="td-title"><b>${mon}月${day.d}日（${WD[dt.getDay()]}）</b><span class="td-tide">${esc(day.name)}</span></div>
+        ${navBtn(1)}
+      </div>
+      <div class="td-sub">
+        <span>月齢 ${tideForDate(dt).age.toFixed(1)}</span>${nowText}
+        ${day.has2 ? '<span class="like-badge g2">◎</span>' : ''}${day.has1 ? '<span class="like-badge g1">○</span>' : ''}
+      </div>
+      ${tideDaySvg(day, result.lo, result.hi, astro)}
+      <p class="tm-tip">${day.windows.map(w => `${w.grade === 2 ? '◎' : '○'} ${jstTime(w.from)}〜${jstTime(w.to + SAMPLE_MS)}（${new Date(w.p.t).getMonth() + 1}/${new Date(w.p.t).getDate()}の${esc(w.p.label)}・${w.p.level}cm に似ている）`).join('<br>')}</p>
     </section>`;
   }
 
@@ -2233,7 +2360,7 @@ function viewTideMonth(albumId, params) {
         selected = (inMonth(t) || visible.find(d => d.grade && matches(d)) || visible[0] || {}).d || null;
       }
       const day = days.find(d => d.d === selected);
-      el.innerHTML = `${count}${pastBtn}${calendarHtml(days)}${day ? dayCardHtml(day) : ''}${source}`;
+      el.innerHTML = `${count}${pastBtn}${calendarHtml(days)}${day ? dayBigHtml(day, days) : ''}${source}`;
     } else {
       const shown = visible.filter(matches);
       el.innerHTML = `${count}${pastBtn}
@@ -2242,6 +2369,10 @@ function viewTideMonth(albumId, params) {
     }
     const btn = document.getElementById('toggle-past');
     if (btn) btn.addEventListener('click', () => { showPast = !showPast; drawDays(); });
+    el.querySelectorAll('[data-daynav]').forEach(b => b.addEventListener('click', () => {
+      selected = Number(b.dataset.daynav);
+      drawDays();
+    }));
     el.querySelectorAll('[data-cal]').forEach(b => b.addEventListener('click', () => {
       selected = Number(b.dataset.cal);
       drawDays();
@@ -2256,13 +2387,14 @@ function viewTideMonth(albumId, params) {
     if (!svg || !result || !result.days) return;
     const day = result.days.find(d => String(d.d) === svg.dataset.day);
     const box = svg.getBoundingClientRect();
-    const { W, L, R } = MINI;
+    const g = svg.dataset;
+    const [W, L, R, top, bottom] = [g.w, g.l, g.r, g.top, g.bottom].map(Number);
     const vx = Math.min(W - R, Math.max(L, (e.clientX - box.left) / box.width * W));
     const t = day.start + Math.round((vx - L) / (W - L - R) * 86400000 / SAMPLE_MS) * SAMPLE_MS;
     const smp = day.samples.find(p => p.t === t);
     if (!smp || smp.h == null) return;
     const x = L + (t - day.start) / 86400000 * (W - L - R);
-    const y = MINI.T + (result.hi - smp.h) / (result.hi - result.lo) * (MINI.H - MINI.T - MINI.B);
+    const y = top + (result.hi - smp.h) / (result.hi - result.lo) * (bottom - top);
     const cross = svg.querySelector('.tm-cross');
     cross.hidden = false;
     cross.querySelector('line').setAttribute('x1', x);

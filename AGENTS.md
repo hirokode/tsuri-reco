@@ -45,6 +45,7 @@
 | js/photos.js | 撮影日時の読み取り・圧縮・写真URLの組み立て（1か所） |
 | js/map.js | Leaflet の地図（レイヤー切替・クラスタ・長押し・ピン指定） |
 | js/tide.js | 潮名の計算（日付の月齢から）・潮位（data/tide/ の気象庁潮位表を読む） |
+| js/astro.js | 日の出・日の入り・月の出・月の入り（簡易計算。潮表の1日のグラフの帯に使う） |
 | js/trip.js | 釣行（端末での記録・位置の記録・「釣れた！」の下書き・送信待ち・終了し忘れ・位置の推定） |
 | config.js | GAS の `/exec` URL（API_URL）だけを書く |
 | sw.js / manifest.json / icons/ | PWA（ホーム画面追加・画像キャッシュ） |
