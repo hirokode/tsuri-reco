@@ -310,23 +310,28 @@ input[type="datetime-local"]:disabled { background: #f1f4f6; color: var(--text);
 #tide-level { color: var(--sea-dark); font-weight: 600; }
 #tide-level:empty { display: none; }
 
-/* ---------- 釣れた回（時刻と匹数） ---------- */
+/* ---------- 釣れた回（1回ごとのカード） ---------- */
 .grid2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
-.hits { display: grid; gap: 8px; margin-bottom: 4px; }
-.hit-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; column-gap: 6px; row-gap: 2px; align-items: center; }
-.hit-row input { margin-top: 0; }
-.hit-no { grid-column: 1 / -1; font-size: 12px; font-weight: 600; color: var(--muted); }
-.hit-no:empty { display: none; }
-.form .hit-count { display: flex; align-items: center; gap: 4px; margin: 0; color: var(--text); font-size: 14px; }
-.hit-count input { width: 56px; padding-left: 6px; padding-right: 6px; text-align: right; }
-.hit-del { width: 36px; height: 36px; color: var(--muted); }
+.date-mode { margin-bottom: 10px; }
+.date-mode .segmented { margin-bottom: 4px; }
+.hit-card { border-left: 4px solid var(--sea); }
+.hit-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.hit-head h2 { margin: 0; }
+.hit-del { width: 36px; height: 36px; color: var(--muted); margin: -6px -8px -6px 0; }
 .hit-del .icon { width: 18px; height: 18px; }
-.hit-total { margin: 0; text-align: right; font-size: 14px; }
-.tide-hit { font-size: 14px; color: var(--muted); margin-right: 6px; }
-.hit-row.moved { animation: hit-moved 1.2s ease-out; border-radius: 10px; }
-@keyframes hit-moved { from { background: var(--sea-light); box-shadow: 0 0 0 6px var(--sea-light); } to { background: transparent; box-shadow: 0 0 0 6px transparent; } }
+.hit-time { display: grid; grid-template-columns: minmax(0, 1fr) 84px; gap: 8px; }
+.hit-total { margin: -4px 4px 10px; text-align: right; font-size: 14px; }
+.add-note { margin: 6px 2px 14px; }
+.tide-label { font-size: 12px; font-weight: 600; color: var(--muted); margin-right: 6px; }
+.hit-badge { display: inline-block; font-size: 12px; font-weight: 700; color: #fff; background: var(--sea); border-radius: 6px; padding: 1px 7px; vertical-align: 2px; }
+.hit-detail .fields { margin-top: 4px; }
+.strip { display: flex; gap: 6px; overflow-x: auto; margin: 4px -4px 8px; padding: 0 4px; scroll-snap-type: x mandatory; scrollbar-width: none; }
+.strip::-webkit-scrollbar { display: none; }
+.strip img { flex: 0 0 72%; width: 72%; min-width: 0; height: auto; aspect-ratio: 1; object-fit: cover; border-radius: 10px; scroll-snap-align: start; background: #e7ebee; }
+.hit-card.moved { animation: hit-moved 1.2s ease-out; }
+@keyframes hit-moved { from { background: var(--sea-light); box-shadow: 0 0 0 4px #b9dcec; } to { background: var(--card); box-shadow: 0 1px 2px rgba(0,0,0,.05); } }
 /* 回ごとの写真（小さい正方形を5列） */
-.hit-photos { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; margin-top: 4px; }
+.hit-photos { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; margin-bottom: 10px; }
 .hit-photos .photo-item { border-radius: 6px; }
 .hit-photos .photo-del { top: 2px; right: 2px; width: 22px; height: 22px; }
 .hit-photos .photo-del .icon { width: 12px; height: 12px; }
@@ -335,4 +340,3 @@ input[type="datetime-local"]:disabled { background: #f1f4f6; color: var(--text);
   border: 1.5px dashed #b9c6cf; border-radius: 6px; color: var(--muted); font-size: 11px; font-weight: 600; cursor: pointer;
 }
 .photo-add-tile .icon { width: 20px; height: 20px; }
-.hits .hit-row + .hit-row { border-top: 1px solid var(--line); padding-top: 8px; }

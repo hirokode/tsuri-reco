@@ -221,8 +221,9 @@ function cleanCatch_(c, members) {
   let cleanPhotos = cleanPhotoList_(photos);
   let count = num_(c.count, 1, 9999, '匹数', true);
   if (Math.floor(count) !== count) throw apiError_('invalid', '匹数は整数で入力してください');
-  // 釣れた回（時刻と匹数）。時刻順に並べ、日時＝最初の回、匹数＝合計にそろえる
-  const hits = cleanHits_(c.hits);
+  // 釣れた回。時刻順に並べ、日時＝最初の回、匹数＝合計にそろえる
+  const hits = cleanHits_(c.hits, members);
+  const summary = hitSummary_(hits);
   if (hits.length) {
     caughtAt = hits[0].at;
     count = hits.reduce(function (sum, h) { return sum + h.count; }, 0);
@@ -232,7 +233,7 @@ function cleanCatch_(c, members) {
       if (cleanPhotos.length > MAX_PHOTOS_TOTAL) throw apiError_('invalid', '写真は合計' + MAX_PHOTOS_TOTAL + '枚までです');
     }
   }
-  return {
+  const fields = {
     caught_at: caughtAt,
     lat: lat,
     lng: lng,
@@ -249,6 +250,30 @@ function cleanCatch_(c, members) {
     photo_ids: JSON.stringify(cleanPhotos),
     hits: hits.length > 1 ? JSON.stringify(hits) : ''
   };
+  // 回ごとに魚種などが入っていれば、釣果全体の値は回からまとめたものにする（画面の summarizeHits と同じ決め方）
+  return summary ? Object.assign(fields, summary) : fields;
+}
+
+// 魚種＝重ならないように「・」でつなぐ、サイズ・重さ＝最大、釣った人・潮・タックル・メモ＝最初の回
+function hitSummary_(hits) {
+  if (!hits.length || hits[0].species === undefined) return null;
+  const max = function (key) {
+    const v = hits.map(function (h) { return h[key]; }).filter(function (x) { return x !== ''; });
+    return v.length ? Math.max.apply(null, v) : '';
+  };
+  const species = [];
+  hits.forEach(function (h) { if (species.indexOf(h.species) < 0) species.push(h.species); });
+  const first = hits[0];
+  return {
+    species: species.join('・').slice(0, 50),
+    size_cm: max('size_cm'),
+    weight_g: max('weight_g'),
+    angler_member_id: first.angler_member_id,
+    tide_name: first.tide_name,
+    method: first.method,
+    bait: first.bait,
+    memo: first.memo
+  };
 }
 
 function cleanPhotoList_(list) {
@@ -258,8 +283,10 @@ function cleanPhotoList_(list) {
   });
 }
 
-function cleanHits_(list) {
+// 回ごとの魚種・サイズ・釣った人・潮・タックル・メモは、送られてきたときだけ確かめて入れる（古い画面は送らない）
+function cleanHits_(list, members) {
   if (!Array.isArray(list)) return [];
+  const full = list.some(function (h) { return h && h.species !== undefined; });
   if (list.length > MAX_HITS) throw apiError_('invalid', '釣れた回は' + MAX_HITS + '回までです');
   const hits = list.map(function (h) {
     const at = text_(h && h.at, 40, '釣れた時刻', true);
@@ -267,6 +294,20 @@ function cleanHits_(list) {
     const count = num_(h.count, 1, 9999, '匹数', true);
     if (Math.floor(count) !== count) throw apiError_('invalid', '匹数は整数で入力してください');
     const hit = { at: at, count: count };
+    if (full) {
+      hit.species = text_(h.species, 50, '魚種', true);
+      hit.size_cm = num_(h.size_cm, 0, 1000, 'サイズ', false);
+      hit.weight_g = num_(h.weight_g, 0, 1000000, '重さ', false);
+      hit.angler_member_id = text_(h.angler_member_id, 60, '釣った人', true);
+      if (!members.some(function (m) { return m.member_id === hit.angler_member_id; })) {
+        throw apiError_('invalid', '釣った人がアルバムのメンバーではありません');
+      }
+      hit.tide_name = text_(h.tide_name, 10, '潮', false);
+      if (TIDE_NAMES.indexOf(hit.tide_name) < 0) throw apiError_('invalid', '潮の値が正しくありません');
+      hit.method = text_(h.method, 100, '釣り方・仕掛け', false);
+      hit.bait = text_(h.bait, 100, 'エサ／ルアー', false);
+      hit.memo = text_(h.memo, 2000, 'メモ', false);
+    }
     if (Array.isArray(h.photos)) {
       if (h.photos.length > MAX_PHOTOS) throw apiError_('invalid', '写真は1回につき' + MAX_PHOTOS + '枚までです');
       hit.photos = cleanPhotoList_(h.photos);

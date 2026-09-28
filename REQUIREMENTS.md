@@ -66,6 +66,8 @@
 - 魚種別件数、潮別・時間帯別・ポイント別の釣果
 
 ### 4.3 釣果登録・編集
+1回の釣行を1件の釣果として記録する。釣れた回（1回目・2回目…）ごとにカードを分け、位置・場所名以外の項目は回ごとに入れる（回を足すと前の回の魚種・釣った人・潮・タックルを引き継ぐ）。
+
 入力項目：
 | 項目 | 必須 | 入力補助 |
 |---|---|---|
@@ -95,7 +97,7 @@
 ## 5. データ（スプレッドシート）
 **albums**：album_id, name, created_at, drive_folder_id, icon_photo(JSON: アイコン画像 {f,t})
 **members**：member_id, album_id, display_name, token, joined_at
-**catches**：catch_id, album_id, caught_at, lat, lng, place_name, species, size_cm, weight_g, count, angler_member_id, tide_name, tide_events(JSON: 満干潮時刻), method, bait, memo, photo_ids(JSON), created_by, created_at, updated_by, updated_at, deleted(bool), hits(JSON: 釣れた回 [{at, count, photos}]。2回以上のときだけ)
+**catches**：catch_id, album_id, caught_at, lat, lng, place_name, species, size_cm, weight_g, count, angler_member_id, tide_name, tide_events(JSON: 満干潮時刻), method, bait, memo, photo_ids(JSON), created_by, created_at, updated_by, updated_at, deleted(bool), hits(JSON: 釣れた回 [{at, count, photos, species, size_cm, weight_g, angler_member_id, tide_name, method, bait, memo}]。2回以上のときだけ)
 
 - 削除は論理削除（deleted=true）
 - ID はUUID
