@@ -6,6 +6,7 @@ const ACTIONS = {
   createAlbum: apiCreateAlbum_,
   getInvite: apiGetInvite_,
   join: apiJoin_,
+  createInvite: apiCreateInvite_,
   listAlbums: apiListAlbums_,
   getAlbum: apiGetAlbum_,
   saveCatch: apiSaveCatch_,

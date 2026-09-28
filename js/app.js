@@ -160,7 +160,7 @@ function lineShareUrl(text) {
 function icon(name) {
   const paths = {
     back: '<path d="M15 5l-7 7 7 7" />',
-    gear: '<circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/>',
+    settings: '<path d="M4 7h8.5M17.5 7H20M4 17h2.5M11.5 17H20"/><circle cx="15" cy="7" r="2.5"/><circle cx="9" cy="17" r="2.5"/>',
     map: '<path d="M9 4L3 6.5v13.5l6-2.5 6 2.5 6-2.5V4l-6 2.5z M9 4v13.5 M15 6.5V20"/>',
     list: '<path d="M4 6h16M4 12h16M4 18h16"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',
@@ -168,7 +168,8 @@ function icon(name) {
     pin: '<path d="M12 21s-6.5-6.2-6.5-11a6.5 6.5 0 0113 0c0 4.8-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/>',
     x: '<path d="M6 6l12 12M18 6L6 18"/>',
     edit: '<path d="M4 20h4L19 9l-4-4L4 16z M13 7l4 4"/>',
-    trip: '<path d="M5 21V4 M5 4h11l-2 4 2 4H5"/>'
+    trip: '<path d="M6.5 12c2.2-3.6 5.4-5.5 8.8-5.5 2.6 0 4.5 2 5.7 5.5-1.2 3.5-3.1 5.5-5.7 5.5-3.4 0-6.6-1.9-8.8-5.5z M6.5 12L2.5 8v8z"/><circle cx="16.6" cy="10.8" r=".6"/>',
+    stop: '<rect x="7" y="7" width="10" height="10" rx="2"/>'
   };
   return `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${paths[name] || ''}</svg>`;
 }
@@ -716,11 +717,13 @@ function viewJoin() {
 
 // ---------- アルバム（地図・一覧） ----------
 
+// アルバムの中の画面（釣行・地図・一覧）の上のバー：左は「アルバム」一覧へ戻る、右は設定
 function albumTopbar(albumId) {
-  return topbar(albumTitle(albumId), {
-    back: '#/',
-    right: `<a class="icon-btn" href="#/a/${esc(albumId)}/settings" aria-label="設定">${icon('gear')}</a>`
-  });
+  return `<header class="topbar album-bar">
+    <span class="topbar-side"><button class="back-pill" data-back="#/" aria-label="アルバムの一覧に戻る">${icon('back')}<span>アルバム</span></button></span>
+    <h1>${esc(albumTitle(albumId))}</h1>
+    <span class="topbar-side right"><a class="icon-btn" href="#/a/${esc(albumId)}/settings" aria-label="設定">${icon('settings')}</a></span>
+  </header>`;
 }
 
 function tabbar(albumId, active) {
@@ -1924,9 +1927,12 @@ async function sendTrips(albumId, { quiet = false } = {}) {
   return res;
 }
 
-function fmtDuration(ms) {
-  const m = Math.max(0, Math.round(ms / 60000));
-  return m >= 60 ? `${Math.floor(m / 60)}時間${m % 60 ? `${m % 60}分` : ''}` : `${m}分`;
+// 自分の最後の釣行の日付（無ければ「ー」）
+function lastTripText(albumId, memberId) {
+  const t = tripsOf(albumId).filter(x => x.member_id === memberId).sort((a, b) => Date.parse(b.started_at) - Date.parse(a.started_at))[0];
+  if (!t) return 'ー';
+  const d = new Date(t.started_at);
+  return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
 function viewTrip(albumId) {
@@ -1951,28 +1957,43 @@ function viewTrip(albumId) {
     if (trip) {
       const started = new Date(trip.started_at);
       const catches = myTripCatches(trip);
+      const mins = Math.max(0, Math.floor((Date.now() - started) / 60000));
       hero = `<section class="trip-hero live">
           <div class="hero-top">
             <p class="trip-state"><span class="rec-dot"></span>釣行中</p>
-            <p class="trip-time"><b>${fmtDuration(Date.now() - started)}</b><span>${hm(started)} 開始・釣果 ${catches.length}件・記録 ${trip.points.length}か所</span></p>
+            <p class="big-time">${Math.floor(mins / 60)}:${pad(mins % 60)}</p>
+            <p class="big-label">経過時間</p>
+            <div class="trip-stats">
+              <div><b>${hm(started)}</b><span>開始</span></div>
+              <div><b>${catches.length}</b><span>釣果</span></div>
+              <div><b>${trip.points.length}</b><span>記録した地点</span></div>
+            </div>
           </div>
-          <div class="hero-mid">
-            <button class="orb coral" id="hit-btn"><span class="orb-icon">📍</span>釣れた！</button>
-            <p class="hero-note">押すと、今の時刻と現在地だけの下書きを作ります</p>
-          </div>
-          <div class="hero-actions">
-            <a class="btn glass" href="#/a/${esc(albumId)}/new">${icon('plus')} 釣果を登録</a>
-            <button class="btn glass" id="end-btn">釣行を終了</button>
+          <div class="hero-bottom">
+            <div class="trip-controls">
+              <a class="round-btn" href="#/a/${esc(albumId)}/new" aria-label="釣果を登録">${icon('plus')}<span>登録</span></a>
+              <button class="go-btn coral" id="hit-btn">釣れた！</button>
+              <button class="round-btn" id="end-btn" aria-label="釣行を終了">${icon('stop')}<span>終了</span></button>
+            </div>
+            <p class="hero-note">「釣れた！」で、今の時刻と現在地だけの下書きを作ります</p>
           </div>
         </section>`;
     } else {
       hero = `<section class="trip-hero">
-          <div class="hero-top"><p class="hero-greet">今日はどこで釣る？</p></div>
-          <div class="hero-mid">
-            <button class="orb" id="start-btn"><span class="orb-icon">🎣</span>釣行を<br>開始</button>
-            <p class="hero-note">開始・終了の時刻と位置を記録します。ルートは地図の「ルート」から見られます</p>
+          <div class="hero-top">
+            <p class="big-label">釣行</p>
+            <p class="hero-greet">今日はどこで釣る？</p>
+            <div class="trip-stats summary">
+              <div><b>${tripsOf(albumId).filter(t => t.member_id === session.member_id).length}</b><span>あなたの釣行</span></div>
+              <div><b>${catchesOf(albumId).filter(c => c.species).reduce((k, c) => k + (Number(c.count) || 1), 0)}<small>匹</small></b><span>アルバムの釣果</span></div>
+              <div><b>${lastTripText(albumId, session.member_id)}</b><span>前回の釣行</span></div>
+            </div>
           </div>
-          <p class="hero-privacy">位置を記録するのは、開始・終了、アプリを開いたとき、「釣れた！」・釣果登録のときだけです（自分の位置のみ・釣行中のみ。見られるのはアルバムのメンバーだけ）。</p>
+          <div class="hero-bottom">
+            <button class="go-btn" id="start-btn">開始</button>
+            <p class="hero-note">開始・終了の時刻と位置を記録します。ルートは地図の「ルート」から見られます</p>
+            <p class="hero-privacy">位置を記録するのは、開始・終了、アプリを開いたとき、「釣れた！」・釣果登録のときだけです（自分の位置のみ・釣行中のみ。見られるのはアルバムのメンバーだけ）。</p>
+          </div>
         </section>`;
     }
 
@@ -2058,6 +2079,7 @@ function viewSettings(albumId) {
   function draw() {
     const s = sessionFor(albumId);
     const invites = (st.data && st.data.invites) || [];
+    const members = ((st.data && st.data.members) || []).filter(m => m.joined);
     $app.innerHTML = `${topbar('設定', { back: `#/a/${albumId}/list` })}
       <main class="page">
         ${st.error && st.error.code === 'invalid_token' ? invalidTokenBox(albumId) : ''}
@@ -2081,7 +2103,19 @@ function viewSettings(albumId) {
           <div id="mine" hidden>${shareBlock(s.token, 'あなた用のリンク')}</div>
         </section>
 
-        ${invites.length ? `<section class="card">
+        <section class="card form" id="members-card">
+          <h2>メンバー</h2>
+          <p class="member-names">${members.map(m => `<span class="chip">${esc(m.display_name || '（名前なし）')}${m.member_id === s.member_id ? '（あなた）' : ''}</span>`).join('')}</p>
+          <form id="invite-form">
+            <label>友達を招待する
+              <input name="friend_name" maxlength="30" placeholder="友達の名前（本人があとで変えられます）">
+            </label>
+            <button class="btn primary block" type="submit">${icon('plus')} 招待リンクを作る</button>
+          </form>
+          <p class="muted small">友達1人につき1つのリンクを作って送ってください（リンクを開いた人がその友達として参加します）。</p>
+        </section>
+
+        ${invites.length ? `<section class="card" id="invites-card">
           <h2>まだ参加していない友達</h2>
           ${invites.map(i => shareBlock(i.token, `${i.display_name || '友達'}さん用の招待リンク`)).join('')}
         </section>` : ''}
@@ -2099,6 +2133,27 @@ function viewSettings(albumId) {
     document.getElementById('layer-select').addEventListener('change', e => {
       saveSettings({ layer: e.target.value });
       toast('保存しました');
+    });
+    const inviteForm = document.getElementById('invite-form');
+    inviteForm.addEventListener('submit', async e => {
+      e.preventDefault();
+      busy(true, '招待リンクを作っています…');
+      try {
+        const res = await api('createInvite', { token: session.token, display_name: inviteForm.elements.friend_name.value.trim() });
+        if (st.data) {
+          st.data.invites = [...(st.data.invites || []), res.invite];
+          st.data.members = [...(st.data.members || []), res.member];
+          saveStateCache(albumId);
+        }
+        draw();
+        const card = document.getElementById('invites-card');
+        if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        toast('招待リンクを作りました。LINEなどで送ってください', 4000);
+      } catch (err) {
+        toast(err.code === 'bad_action' ? 'サーバーの更新がまだです。少し待ってからもう一度試してください' : err.message, 4000);
+      } finally {
+        busy(false);
+      }
     });
     const form = document.getElementById('name-form');
     form.addEventListener('submit', async e => {
