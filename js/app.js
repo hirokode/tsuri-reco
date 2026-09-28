@@ -16,7 +16,7 @@ import {
   getSettings, saveSettings, getAlbumCache, setAlbumCache, getHomeCache, setHomeCache
 } from './api.js';
 import { MAX_PHOTOS, photoImg, preparePhoto, prepareIcon, blobToBase64 } from './photos.js';
-import { tideForDate, tideLevel, jstTime } from './tide.js';
+import { tideForDate, tideLevel, tideSeries, jstTime } from './tide.js';
 import {
   activeTrip, startTrip, endTrip, recordPoint, recordOpen, addHitDraft, removeDraft, outbox, flushOutbox,
   staleState, estimatePoint, lastPointTime
@@ -755,12 +755,141 @@ function tideLineHtml(r, t) {
   return `<span class="tide-label">潮位（予測）</span><b>${esc(now.level)}</b> <span class="muted small">${esc(now.since)}</span>`;
 }
 
-// その日の満潮・干潮と、参照した地点・出典
-function tideCardHtml(r) {
-  const list = type => r.events.filter(e => e.type === type).map(e => `${jstTime(e.ms)}（${e.h}cm）`).join('　') || 'なし';
-  return `<h2>潮位 <span class="muted small">（予測）</span></h2>
+// ---------- 潮位グラフ（詳細画面） ----------
+const HOUR_MS = 3600000;
+
+// グラフの範囲：釣行にひも付いていれば開始〜終了。無ければ写真の撮影時刻の最初〜最後（1枚なら前後6時間）、
+// 撮影時刻も無ければ釣れた回の時刻の最初〜最後（1回なら前後6時間）。釣れた回がすべて入るように広げ、2時間より短ければ2時間にする
+function tideChartRange(hs, trip) {
+  const hitTimes = hs.map(h => Date.parse(h.at)).filter(isFinite);
+  const photoTimes = hs.flatMap(h => h.photos || []).map(p => Date.parse(p.at)).filter(isFinite).sort((a, b) => a - b);
+  let from;
+  let to;
+  let basis;
+  if (trip) {
+    from = Date.parse(trip.started_at);
+    to = trip.ended_at ? Date.parse(trip.ended_at) : Date.now();
+    basis = '釣行の開始〜終了';
+  } else if (photoTimes.length >= 2) {
+    [from, to] = [photoTimes[0], photoTimes[photoTimes.length - 1]];
+    basis = '写真の撮影時刻の最初〜最後';
+  } else if (photoTimes.length === 1) {
+    [from, to] = [photoTimes[0] - 6 * HOUR_MS, photoTimes[0] + 6 * HOUR_MS];
+    basis = '写真の撮影時刻の前後6時間';
+  } else if (hitTimes.length >= 2) {
+    [from, to] = [Math.min(...hitTimes), Math.max(...hitTimes)];
+    basis = '釣れた時刻の最初〜最後';
+  } else {
+    [from, to] = [hitTimes[0] - 6 * HOUR_MS, hitTimes[0] + 6 * HOUR_MS];
+    basis = '釣れた時刻の前後6時間';
+  }
+  from = Math.min(from, ...hitTimes);
+  to = Math.max(to, ...hitTimes);
+  if (to - from < 2 * HOUR_MS) {
+    const mid = (from + to) / 2;
+    [from, to] = [mid - HOUR_MS, mid + HOUR_MS];
+  }
+  return { from, to, basis };
+}
+
+// 潮位（線と薄い面）＋釣れた時刻（コーラルの点）。縦軸は1本（cm）、横軸は時刻（日本時間）
+const CHART = { W: 340, H: 200, L: 40, R: 14, T: 22, B: 28 };
+function tideChartSvg(series, marks, range) {
+  const { W, H, L, R, T, B } = CHART;
+  const values = [...series.points.map(p => p.h), ...marks.map(m => m.h)];
+  let lo = Math.min(...values);
+  let hi = Math.max(...values);
+  const step = hi - lo > 150 ? 50 : hi - lo > 60 ? 20 : 10;
+  lo = Math.floor(lo / step) * step;
+  hi = Math.ceil(hi / step) * step;
+  if (hi === lo) hi = lo + step;
+  const x = t => L + (t - range.from) / (range.to - range.from) * (W - L - R);
+  const y = h => T + (hi - h) / (hi - lo) * (H - T - B);
+  const f = n => n.toFixed(1);
+
+  const yTicks = [];
+  for (let v = lo; v <= hi; v += step) yTicks.push(v);
+  const span = (range.to - range.from) / HOUR_MS;
+  const every = span <= 4 ? 1 : span <= 8 ? 2 : span <= 16 ? 3 : 6;
+  const xTicks = [];
+  const JST_MS = 9 * HOUR_MS;
+  for (let t = Math.ceil((range.from + JST_MS) / (every * HOUR_MS)) * every * HOUR_MS - JST_MS; t <= range.to; t += every * HOUR_MS) xTicks.push(t);
+  const tickLabel = t => {
+    const d = new Date(t + JST_MS);
+    return d.getUTCHours() === 0 ? `${d.getUTCMonth() + 1}/${d.getUTCDate()}` : `${d.getUTCHours()}時`;
+  };
+
+  const line = series.points.map((p, i) => `${i ? 'L' : 'M'}${f(x(p.t))},${f(y(p.h))}`).join('');
+  const base = H - B;
+  const area = `${line}L${f(x(series.points[series.points.length - 1].t))},${base}L${f(x(series.points[0].t))},${base}Z`;
+  const many = marks.length > 1;
+  return `<svg class="tide-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="潮位のグラフ。釣れた時刻に印">
+    <g class="tc-grid">${yTicks.map(v => `<line x1="${L}" x2="${W - R}" y1="${f(y(v))}" y2="${f(y(v))}"/>`).join('')}</g>
+    <g class="tc-yl">${yTicks.map(v => `<text x="${L - 6}" y="${f(y(v) + 3.5)}">${v}</text>`).join('')}</g>
+    <text class="tc-unit" x="${L - 6}" y="${T - 10}">cm</text>
+    <g class="tc-xl">${xTicks.map(t => `<line x1="${f(x(t))}" x2="${f(x(t))}" y1="${base}" y2="${base + 4}"/><text x="${f(x(t))}" y="${base + 16}">${tickLabel(t)}</text>`).join('')}</g>
+    <path class="tc-area" d="${area}"/>
+    <path class="tc-line" d="${line}"/>
+    <g class="tc-ev">${series.events.map(e => {
+      // 満潮は線の上・干潮は線の下に。釣れた時刻の印（番号）と重なるときは、反対側に出す
+      let up = e.type === '満潮';
+      if (marks.some(m => Math.abs(x(m.t) - x(e.ms)) < 30)) up = !up;
+      const ty = up ? y(e.h) - (e.type === '満潮' ? 7 : 8) : y(e.h) + 15;
+      return `<text x="${f(x(e.ms))}" y="${f(Math.min(Math.max(ty, T - 6), base - 3))}">${e.type === '満潮' ? '満' : '干'} ${jstTime(e.ms)}</text>`;
+    }).join('')}</g>
+    <g class="tc-marks">${marks.map((m, i) => `<circle cx="${f(x(m.t))}" cy="${f(y(m.h))}" r="5"/>${many ? `<text x="${f(x(m.t))}" y="${f(y(m.h) - 9)}">${i + 1}</text>` : ''}`).join('')}</g>
+    <g class="tc-cross" hidden><line y1="${T}" y2="${base}"/><circle r="4"/></g>
+    <rect class="tc-hit" x="${L}" y="${T - 12}" width="${W - L - R}" height="${base - T + 12}"/>
+  </svg>`;
+}
+
+// 指でなぞると、その時刻の潮位を出す（釣れた時刻の近くでは、その回を出す）
+function bindTideChart(wrap, series, marks, range) {
+  const svg = wrap.querySelector('svg');
+  const tip = wrap.querySelector('.tg-tip');
+  const cross = svg.querySelector('.tc-cross');
+  const { W, H, L, R, T, B } = CHART;
+  const values = [...series.points.map(p => p.h), ...marks.map(m => m.h)];
+  const step = Math.max(...values) - Math.min(...values) > 150 ? 50 : Math.max(...values) - Math.min(...values) > 60 ? 20 : 10;
+  const lo = Math.floor(Math.min(...values) / step) * step;
+  let hi = Math.ceil(Math.max(...values) / step) * step;
+  if (hi === lo) hi = lo + step;
+  const toX = t => L + (t - range.from) / (range.to - range.from) * (W - L - R);
+  const toY = h => T + (hi - h) / (hi - lo) * (H - T - B);
+  function show(e) {
+    const box = svg.getBoundingClientRect();
+    const sx = (e.clientX - box.left) * W / box.width;
+    let t = range.from + (Math.min(Math.max(sx, L), W - R) - L) / (W - L - R) * (range.to - range.from);
+    const near = marks.find(m => Math.abs(toX(m.t) - sx) <= 12);
+    if (near) t = near.t;
+    const h = series.levelAt(t);
+    if (h == null) return;
+    cross.hidden = false;
+    cross.querySelector('line').setAttribute('x1', toX(t));
+    cross.querySelector('line').setAttribute('x2', toX(t));
+    cross.querySelector('circle').setAttribute('cx', toX(t));
+    cross.querySelector('circle').setAttribute('cy', toY(h));
+    tip.hidden = false;
+    tip.textContent = `${near && marks.length > 1 ? `${marks.indexOf(near) + 1}回目 ` : near ? '釣れた時刻 ' : ''}${jstTime(t)}　約${Math.round(h)}cm`;
+    const px = toX(t) / W * box.width;
+    tip.style.left = `${Math.min(Math.max(px, 60), box.width - 60)}px`;
+  }
+  const hit = svg.querySelector('.tc-hit');
+  hit.addEventListener('pointerdown', show);
+  hit.addEventListener('pointermove', show);
+  hit.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') { cross.hidden = true; tip.hidden = true; } });
+}
+
+function tideChartCardHtml(series, marks, range) {
+  const list = type => series.events.filter(e => e.type === type).map(e => `${jstTime(e.ms)}（${e.h}cm）`).join('　') || 'なし';
+  const d = new Date(range.from);
+  const e = new Date(range.to);
+  return `<h2>潮位グラフ <span class="muted small">（予測）</span></h2>
+    <div class="tg-legend"><span><i class="lg-line"></i>潮位</span><span><i class="lg-dot"></i>釣れた時刻</span></div>
+    <div class="tg-wrap">${tideChartSvg(series, marks, range)}<div class="tg-tip" hidden></div></div>
+    <p class="muted small">範囲：${esc(range.basis)}（${d.getMonth() + 1}/${d.getDate()} ${esc(jstTime(range.from))}〜${e.toDateString() !== d.toDateString() ? `${e.getMonth() + 1}/${e.getDate()} ` : ''}${esc(jstTime(range.to))}）。グラフをなぞると、その時刻の潮位が出ます。</p>
     <dl class="fields"><dt>満潮</dt><dd>${esc(list('満潮'))}</dd><dt>干潮</dt><dd>${esc(list('干潮'))}</dd></dl>
-    <p class="muted small">${esc(r.station.name)}（約${Math.round(r.km)}km）の予測です。出典：気象庁「潮位表」。川の上流などでは時刻が遅れることがあります。</p>`;
+    <p class="muted small">${esc(series.station.name)}（約${Math.round(series.km)}km）の予測です。出典：気象庁「潮位表」。川の上流などでは時刻が遅れることがあります。</p>`;
 }
 
 // 回ごとに持つ項目（位置・場所名だけは釣果全体で1つ）
@@ -1044,7 +1173,7 @@ async function uploadPhotos(token, photos, done) {
   for (let i = 0; i < photos.length; i++) {
     const p = photos[i];
     if (p.kind === 'existing') {
-      ids.push({ f: p.f, t: p.t });
+      ids.push(p.at ? { f: p.f, t: p.t, at: p.at } : { f: p.f, t: p.t });
       continue;
     }
     if (done && done[i]) {
@@ -1056,8 +1185,10 @@ async function uploadPhotos(token, photos, done) {
       full: await blobToBase64(p.full),
       thumb: await blobToBase64(p.thumb)
     }, { timeout: 120000 });
-    ids.push(res.photo);
-    if (done) done[i] = res.photo;
+    // 撮影時刻（あれば）も一緒に持つ（潮位グラフの範囲に使う）
+    const photo = p.takenAt ? { ...res.photo, at: toLocalIso(p.takenAt) } : res.photo;
+    ids.push(photo);
+    if (done) done[i] = photo;
   }
   return ids;
 }
@@ -1127,19 +1258,21 @@ function viewForm(albumId, catchId, params) {
   let locSource = orig ? (orig.loc_source || '') : localDraft ? 'button' : loc ? 'manual' : '';
   let locDecided = editing && orig.loc_source !== 'estimated'; // 前に決めた位置は、推定で上書きしない
   const lastCatch = catchesOf(albumId).find(c => isFinite(c.lat));
-  // 日時：'photo'＝写真の撮影日時を使う（既定。写真のある回は変更不可）、'manual'＝自分で入力
-  let dateMode = 'photo';
   // 釣れた回。1回ごとに時刻・匹数・写真（5枚まで）・魚種・サイズ・釣った人・潮・タックル・メモを持つ。
-  // 時刻順に並べ、最初の回＝釣果の日時。tideTouched：潮を手で選んだ（自動で変えない）。
+  // 時刻順に並べ、最初の回＝釣果の日時。
+  // usePhoto：時刻を写真の撮影日時から入れる（回ごとのトグル。既定はオン。写真があればその回の時刻は変更不可）。
+  // tideTouched：潮を手で選んだ（自動で変えない）。tideAt：潮名を決めたときの時刻（編集では保存済みの潮を、時刻を変えるまで残す）。
   // uid：回の目印。入力欄とは並び順ではなく uid で結びつける（並べ替え中に古い欄の値が別の回に入らないように）
   let uidSeq = 0;
   const hits = (orig ? hitsOf(orig) : [{ at: localDraft ? localDraft.caught_at : new Date().toISOString(), count: 1, photos: [], angler_member_id: session.member_id }])
     .map(h => ({
       at: toLocalInput(new Date(h.at)),
       count: h.count,
-      photos: (h.photos || []).map(p => ({ kind: 'existing', f: p.f, t: p.t })),
+      photos: (h.photos || []).map(p => ({ kind: 'existing', f: p.f, t: p.t, at: p.at })),
       ...Object.fromEntries(HIT_FIELDS.map(k => [k, h[k] ?? ''])),
-      tideTouched: editing,
+      usePhoto: true,
+      tideTouched: false,
+      tideAt: editing ? toLocalInput(new Date(h.at)) : null,
       uid: ++uidSeq
     }));
   const hitBy = uid => hits.find(h => h.uid === Number(uid));
@@ -1154,14 +1287,6 @@ function viewForm(albumId, catchId, params) {
   $app.innerHTML = `${topbar(title, { back })}
     <main class="page">
       <form id="catch-form" class="form" novalidate>
-        <div class="date-mode">
-          <div class="segmented" role="radiogroup" aria-label="日時の入れ方">
-            <label><input type="radio" name="date_mode" value="photo" checked><span>時刻は写真から</span></label>
-            <label><input type="radio" name="date_mode" value="manual"><span>自分で入力</span></label>
-          </div>
-          <p class="muted small" id="date-hint"></p>
-        </div>
-
         <div id="hits"></div>
         <button class="btn block" type="button" id="hit-add">${icon('plus')} 釣れた回を追加</button>
         <p class="muted small add-note">時間をあけて釣れたときは回を分けて記録できます（前の回の魚種・タックルを引き継ぎます）。時刻の順に自動で並べ替えます。写真は1回につき${MAX_PHOTOS}枚まで。写真の位置情報は使わず、保存もしません。</p>
@@ -1190,14 +1315,21 @@ function viewForm(albumId, catchId, params) {
   const coord = form.elements.coord;
   const gmaps = document.getElementById('gmaps-link');
   const hitsEl = document.getElementById('hits');
-  const dateHint = document.getElementById('date-hint');
   const created = []; // この画面で作ったプレビューURL（画面を閉じたら解放）
 
   form.addEventListener('input', () => { dirty = true; });
 
   // その回の写真の撮影日時（いちばん早いもの）。撮影日時の無い写真だけなら null
-  const photoTime = h => h.photos.filter(p => p.kind === 'new' && p.takenAt).map(p => p.takenAt).sort((a, b) => a - b)[0] || null;
-  const locked = h => dateMode === 'photo' && !!photoTime(h);
+  // （新しく選んだ写真の撮影日時と、保存済みの写真の撮影時刻から）
+  const photoTime = h => h.photos.map(p => (p.kind === 'new' ? p.takenAt : p.at ? new Date(p.at) : null))
+    .filter(d => d && !isNaN(d)).sort((a, b) => a - b)[0] || null;
+  const locked = h => h.usePhoto && !!photoTime(h);
+  // 時刻の下の一言
+  const timeNote = h => {
+    if (!h.usePhoto) return '時刻を自分で入れます';
+    if (photoTime(h)) return '写真の撮影日時を使っています';
+    return h.photos.length ? '写真に撮影日時が無いため、自分で入れてください' : '写真を選ぶと撮影日時が入ります';
+  };
 
   // ---------- 回のカード ----------
   let moved = []; // 並べ替えで動いた回（光らせる）
@@ -1216,7 +1348,14 @@ function viewForm(albumId, catchId, params) {
           <input type="file" accept="image/*" multiple hidden data-photo-input="${h.uid}"></label>` : ''}
       </div>
       <div class="hit-time">
-        <label>時刻 <span class="req">必須</span><input type="datetime-local" class="hit-at" ${f('at')} value="${esc(h.at)}" ${locked(h) ? 'disabled' : ''}></label>
+        <div class="time-field">
+          <div class="time-head">
+            <span class="field-label">時刻 <span class="req">必須</span></span>
+            <label class="switch"><input type="checkbox" data-photo-toggle="${h.uid}" ${h.usePhoto ? 'checked' : ''}><span class="switch-track"></span>写真から入力</label>
+          </div>
+          <input type="datetime-local" class="hit-at" aria-label="時刻" ${f('at')} value="${esc(h.at)}" ${locked(h) ? 'disabled' : ''}>
+          <p class="time-note">${esc(timeNote(h))}</p>
+        </div>
         <label>匹数<input type="number" inputmode="numeric" min="1" step="1" ${f('count')} value="${esc(h.count)}"></label>
       </div>
       <label>魚種 <span class="req">必須</span><input maxlength="50" list="species-list" ${f('species')} value="${esc(h.species)}" placeholder="例：アジ"></label>
@@ -1227,11 +1366,13 @@ function viewForm(albumId, catchId, params) {
       <label>釣った人
         <select ${f('angler_member_id')}>${members.map(m => `<option value="${esc(m.member_id)}" ${m.member_id === h.angler_member_id ? 'selected' : ''}>${esc(m.display_name || '（未参加）')}</option>`).join('')}</select>
       </label>
-      <label>潮
-        <select ${f('tide_name')}><option value="">（未選択）</option>${TIDES.map(t => `<option ${h.tide_name === t ? 'selected' : ''}>${t}</option>`).join('')}</select>
-      </label>
+      <div class="grid2 tide-row">
+        <label>潮
+          <select ${f('tide_name')}><option value="">（未選択）</option>${TIDES.map(t => `<option ${h.tide_name === t ? 'selected' : ''}>${t}</option>`).join('')}</select>
+        </label>
+        <div class="tide-level-field"><span class="field-label">潮位（予測）</span><div class="readout" data-tide-level>ー</div></div>
+      </div>
       <p class="muted small tide-hint" data-tide-hint></p>
-      <p class="small tide-hint tide-level" data-tide-level></p>
       <label>釣り方・仕掛け<input maxlength="100" ${f('method')} value="${esc(h.method)}"></label>
       <label>エサ／ルアー<input maxlength="100" ${f('bait')} value="${esc(h.bait)}"></label>
       <label>メモ<textarea maxlength="2000" rows="2" ${f('memo')}>${esc(h.memo)}</textarea></label>
@@ -1274,10 +1415,14 @@ function viewForm(albumId, catchId, params) {
 
   // 並べ替えは、回のカードから離れたとき（同じ回の続きを入れている途中で動かないように）
   let needSort = false;
+  // 同じカードの中を押した（トグル・ラベルなど、フォーカスを受けない所も）なら、まだ並べ替えない。
+  // ここで描き直すと、押した部品が消えてタップが効かなくなるため
+  let pressedCard = null;
+  hitsEl.addEventListener('pointerdown', e => { pressedCard = e.target.closest('[data-hit]'); }, true);
   hitsEl.addEventListener('focusout', e => {
     if (redrawing || !needSort) return;
     const from = e.target.closest('[data-hit]');
-    if (from && from.contains(e.relatedTarget)) return;
+    if (from && (from.contains(e.relatedTarget) || from === pressedCard)) return;
     needSort = false;
     readHits();
     sortHits();
@@ -1289,6 +1434,13 @@ function viewForm(albumId, catchId, params) {
     if (redrawing) return;
     const t = e.target;
     if (t.dataset.photoInput !== undefined) return addPhotos(hitBy(t.dataset.photoInput), t);
+    if (t.dataset.photoToggle !== undefined) {
+      readHits();
+      hitBy(t.dataset.photoToggle).usePhoto = t.checked;
+      dirty = true;
+      syncDate();
+      return;
+    }
     readHits();
     const h = hitBy(t.dataset.uid);
     if (!h) return;
@@ -1335,7 +1487,8 @@ function viewForm(albumId, catchId, params) {
     hits.push({
       at: last.at, count: 1, photos: [],
       species: last.species, size_cm: '', weight_g: '', angler_member_id: last.angler_member_id,
-      tide_name: last.tide_name, method: last.method, bait: last.bait, memo: '', tideTouched: false, uid: ++uidSeq
+      tide_name: last.tide_name, method: last.method, bait: last.bait, memo: '',
+      usePhoto: last.usePhoto, tideTouched: last.tideTouched, tideAt: last.tideAt, uid: ++uidSeq
     });
     dirty = true;
     drawHits();
@@ -1364,7 +1517,7 @@ function viewForm(albumId, catchId, params) {
     } finally {
       busy(false);
       const t = photoTime(hit);
-      if (dateMode === 'photo' && t && +t !== +hadTime) toast('写真の撮影日時を入れました');
+      if (hit.usePhoto && t && +t !== +hadTime) toast('写真の撮影日時を入れました');
       syncDate();
       if (t) estimateLoc(+t);
     }
@@ -1382,61 +1535,50 @@ function viewForm(albumId, catchId, params) {
   }
 
   // ---------- 潮（回ごと） ----------
-  // 潮名：その回の日付の月齢から計算。新規の回では自動で入れる（手で選び直したらそのまま）。
-  // 潮位（予測）：潮を選んでいて、釣り場の位置が決まっているときだけ
+  // 潮名：その回の日付の月齢から自動で入れる（時刻が変わったら入れ直す。手で選んだらそのまま。
+  // 渓流などは、あとから「（未選択）」を選ぶ）。編集では、時刻を変えるまで保存済みの潮を残す。
+  // 潮位（予測）：欄はいつも出し、時刻・位置・潮がそろわないときや、データが無いときは「ー」
   function syncTide(h) {
     const card = hitsEl.querySelector(`[data-hit="${h.uid}"]`);
     if (!card) return;
     const hint = card.querySelector('[data-tide-hint]');
     const levelEl = card.querySelector('[data-tide-level]');
     const d = new Date(h.at);
-    if (isNaN(d)) {
-      hint.textContent = levelEl.textContent = '';
-      return;
+    const n = (h._tideReq = (h._tideReq || 0) + 1);
+    const dash = note => { levelEl.textContent = 'ー'; levelEl.title = note || ''; };
+    if (!h.at || isNaN(d)) {
+      hint.textContent = '';
+      return dash();
     }
     const t = tideForDate(d);
-    if (!h.tideTouched) {
+    if (!h.tideTouched && h.at !== h.tideAt) {
       h.tide_name = t.name;
+      h.tideAt = h.at;
       card.querySelector('[data-f="tide_name"]').value = t.name;
     }
-    const calc = `この日の潮は「${t.name}」（月齢${t.age.toFixed(1)}から計算）。`;
-    hint.textContent = h.tide_name === t.name
-      ? `${calc}${h.tideTouched ? '' : '自動で入れました。'}渓流など潮に関係ない釣りは「（未選択）」にしてください。`
-      : calc;
-    const n = (h._tideReq = (h._tideReq || 0) + 1);
-    if (!h.tide_name || !loc) {
-      levelEl.textContent = '';
-      return;
-    }
+    hint.textContent = `この日の潮は「${t.name}」（月齢${t.age.toFixed(1)}から自動）。潮に関係ない釣りは「（未選択）」に。`;
+    if (!h.tide_name || !loc) return dash();
     tideLevel(loc.lat, loc.lng, d).then(r => {
       if (n !== h._tideReq) return; // もっと新しい計算が始まっている
       const el = hitsEl.querySelector(`[data-hit="${h.uid}"] [data-tide-level]`);
       if (!el) return;
-      el.innerHTML = r && r.level != null ? `${tideLineHtml(r, d.getTime())}　<span class="muted small">${esc(r.station.name)}（約${Math.round(r.km)}km）</span>` : '';
+      if (!r || r.level == null) {
+        el.textContent = 'ー';
+        return;
+      }
+      const now = tideNowText(r, d.getTime());
+      el.innerHTML = `<b>${esc(now.level)}</b><span class="muted small">${esc(r.station.name)}（約${Math.round(r.km)}km）${now.since ? '・' + esc(now.since) : ''}</span>`;
     });
   }
 
-  // ---------- 時刻の入れ方 ----------
+  // ---------- 時刻（「写真から入力」がオンの回は、写真の撮影日時を入れる） ----------
   function syncDate() {
     if (hitsEl.querySelector('[data-f]')) readHits();
-    if (dateMode === 'photo') hits.forEach(h => { const t = photoTime(h); if (t) h.at = toLocalInput(t); });
+    hits.forEach(h => { const t = h.usePhoto && photoTime(h); if (t) h.at = toLocalInput(t); });
     sortHits();
     drawHits();
     moved = [];
-    if (dateMode === 'manual') {
-      dateHint.textContent = '時刻を自由に変えられます。';
-      return;
-    }
-    const noTime = hits.some(h => h.photos.some(p => p.kind === 'new') && !photoTime(h));
-    dateHint.textContent = hits.some(photoTime)
-      ? `写真の撮影日時を、その回の時刻に入れています（写真のある回の時刻は変えられません）。${noTime ? '撮影日時の無い写真の回は、時刻を自分で入れてください。' : ''}`
-      : noTime ? '写真に撮影日時が無いため、時刻を自分で入れてください。'
-      : '写真を選ぶと、その回の時刻に撮影日時が入ります。';
   }
-  form.querySelectorAll('input[name="date_mode"]').forEach(r => r.addEventListener('change', () => {
-    dateMode = r.value;
-    syncDate();
-  }));
   syncDate();
 
   // ---------- 釣り場（位置） ----------
@@ -1681,7 +1823,7 @@ function viewDetail(albumId, catchId) {
 
     if (mapReady()) mini = createMiniMap(document.getElementById('mini-map'), { layerKey: getSettings().layer, lat: c.lat, lng: c.lng });
 
-    // 潮位（予測）：潮を選んでいる回ごとに、その時刻の潮位。下のカードに、最初の回の日の満干潮
+    // 潮位（予測）：潮を選んでいる回ごとに、その時刻の潮位。下のカードに潮位グラフ（釣れた時刻に印）
     const tideCard = document.getElementById('tide-card');
     if (tideCard) {
       hs.forEach((h, i) => {
@@ -1692,11 +1834,15 @@ function viewDetail(albumId, catchId) {
           if (!el || !r || r.level == null) return;
           el.innerHTML = tideLineHtml(r, t.getTime());
           el.hidden = false;
-          if (i === hs.findIndex(x => x.tide_name) && tideCard.isConnected) {
-            tideCard.innerHTML = tideCardHtml(r);
-            tideCard.hidden = false;
-          }
         });
+      });
+      const range = tideChartRange(hs, trip);
+      tideSeries(c.lat, c.lng, range.from, range.to).then(series => {
+        if (!series || !tideCard.isConnected) return;
+        const marks = hs.map(h => ({ t: Date.parse(h.at), h: series.levelAt(Date.parse(h.at)) })).filter(m => m.h != null);
+        tideCard.innerHTML = tideChartCardHtml(series, marks, range);
+        tideCard.hidden = false;
+        bindTideChart(tideCard.querySelector('.tg-wrap'), series, marks, range);
       });
     }
 

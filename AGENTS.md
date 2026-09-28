@@ -86,6 +86,7 @@
 
 - ID は UUID。削除は論理削除（deleted=true）
 - tide_events・photo_ids・icon_photo・hits・points は JSON 文字列
+- 写真は {f, t, at}（f＝原寸・t＝サムネの Drive ファイルID、at＝撮影時刻（あれば）。位置は持たない）
 - loc_source は位置の出どころ（button＝「釣れた！」／estimated＝撮影時刻から推定／manual＝手動）。draft は「釣れた！」の下書き（魚種などが空でもよい）
 - trips（釣行）は端末で記録し、終了時に saveTrip でまとめて送る。trip_id・下書きの catch_id は端末で作る UUID（再送しても重複しない）。釣行を変更・削除できるのは本人だけ
 - hits は「釣れた回」[{at, count, photos, species, size_cm, weight_g, angler_member_id, tide_name, method, bait, memo}]（時刻順・写真は1回5枚まで）。2回以上のときだけ入れる。

@@ -159,34 +159,84 @@ export function jstTime(ms) {
   return `${d.getUTCHours()}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
 }
 
-// その場所・時刻の潮位。いちばん近い掲載地点の予測値を使う。データが無ければ null
-export async function tideLevel(lat, lng, date) {
-  const t = date.getTime();
-  if (!isFinite(lat) || !isFinite(lng) || !isFinite(t)) return null;
+async function nearestStation(lat, lng) {
   const stations = await loadStations();
-  if (!stations.length) return null;
   let best = null;
   for (const s of stations) {
     const km = distanceKm(lat, lng, s.lat, s.lng);
     if (!best || km < best.km) best = { station: s, km };
   }
-  const [prevDay, today, nextDay] = await Promise.all([t - DAY, t, t + DAY].map(ms => dayAt(best.station.code, ms)));
-  if (!today) return { ...best, level: null };
+  return best;
+}
 
-  // 毎時の値のあいだを直線でつなぐ（23時台は翌日0時の値を使う）
-  const pos = (t - today.start) / HOUR;
-  const h0 = Math.floor(pos);
-  const a = today.hourly[h0];
-  const b = h0 < 23 ? today.hourly[h0 + 1] : (nextDay ? nextDay.hourly[0] : a);
-  const level = Math.round(a + (b - a) * (pos - h0));
+// from〜to を含む日（前後1日を足す）の、潮位の節点（毎時の値＋満潮・干潮の時刻と高さ）を時刻順に。
+// 満干潮を節点に入れるので、山と谷の近くでも毎時の値だけより正確になる
+async function knotsBetween(code, from, to) {
+  const days = [];
+  for (let ms = from - DAY; ms <= to + DAY; ms += DAY) days.push(dayAt(code, ms));
+  const seen = new Set();
+  const knots = [];
+  const events = [];
+  for (const d of await Promise.all(days)) {
+    if (!d || seen.has(d.key)) continue;
+    seen.add(d.key);
+    d.hourly.forEach((h, i) => knots.push({ t: d.start + i * HOUR, h }));
+    d.events.forEach(e => {
+      const ev = { type: e.type, h: e.h, ms: d.start + e.min * 60000 };
+      events.push(ev);
+      knots.push({ t: ev.ms, h: e.h });
+    });
+  }
+  knots.sort((a, b) => a.t - b.t);
+  events.sort((a, b) => a.ms - b.ms);
+  return { knots: knots.filter((k, i) => i === 0 || k.t !== knots[i - 1].t), events };
+}
 
-  const toEvents = d => (d ? d.events.map(e => ({
-    type: e.type, h: e.h, ms: d.start + e.min * 60000
-  })) : []);
-  const dayEvents = toEvents(today).sort((x, y) => x.ms - y.ms);
-  const all = [...toEvents(prevDay), ...dayEvents, ...toEvents(nextDay)].sort((x, y) => x.ms - y.ms);
-  const prev = [...all].reverse().find(e => e.ms <= t) || null;
-  const next = all.find(e => e.ms > t) || null;
+// 節点のあいだを直線でつないだ、時刻 t の潮位。範囲外なら null
+function levelAt(knots, t) {
+  if (!knots.length || t < knots[0].t || t > knots[knots.length - 1].t) return null;
+  let lo = 0;
+  let hi = knots.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (knots[mid].t <= t) lo = mid; else hi = mid;
+  }
+  const a = knots[lo];
+  const b = knots[hi];
+  return b.t === a.t ? a.h : a.h + (b.h - a.h) * (t - a.t) / (b.t - a.t);
+}
+
+// その場所・時刻の潮位。いちばん近い掲載地点の予測値を使う。データが無ければ null
+export async function tideLevel(lat, lng, date) {
+  const t = date.getTime();
+  if (!isFinite(lat) || !isFinite(lng) || !isFinite(t)) return null;
+  const best = await nearestStation(lat, lng);
+  if (!best) return null;
+  const { knots, events } = await knotsBetween(best.station.code, t, t);
+  const v = levelAt(knots, t);
+  if (v == null) return { ...best, level: null };
+  const day = jstDay(t);
+  const dayEvents = events.filter(e => e.ms >= day.start && e.ms < day.start + DAY);
+  const prev = [...events].reverse().find(e => e.ms <= t) || null;
+  const next = events.find(e => e.ms > t) || null;
   const trend = next ? (next.type === '満潮' ? '上げ' : '下げ') : prev ? (prev.type === '満潮' ? '下げ' : '上げ') : '';
-  return { ...best, level, trend, prev, next, events: dayEvents };
+  return { ...best, level: Math.round(v), trend, prev, next, events: dayEvents };
+}
+
+// グラフ用：from〜to の潮位の線（節点）と、その間の満潮・干潮。データが無ければ null
+export async function tideSeries(lat, lng, from, to) {
+  if (!isFinite(lat) || !isFinite(lng)) return null;
+  const best = await nearestStation(lat, lng);
+  if (!best) return null;
+  const { knots, events } = await knotsBetween(best.station.code, from, to);
+  const a = levelAt(knots, from);
+  const b = levelAt(knots, to);
+  if (a == null || b == null) return null;
+  const inside = knots.filter(k => k.t > from && k.t < to);
+  return {
+    ...best,
+    points: [{ t: from, h: a }, ...inside, { t: to, h: b }],
+    events: events.filter(e => e.ms >= from && e.ms <= to),
+    levelAt: t => levelAt(knots, t)
+  };
 }
