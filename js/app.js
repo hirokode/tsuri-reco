@@ -217,9 +217,21 @@ function goBack(fallback) {
   else replaceHash(fallback);
 }
 
+// アルバムの一覧へ。前の画面に戻るのではなく、まっすぐ一覧を開く（アプリ内の履歴もそこから始め直す）
+let homing = false;
+function goHome() {
+  homing = true;
+  location.hash = '#/';
+}
+
 window.addEventListener('hashchange', () => {
   const hash = location.hash || '#/';
-  if (replacing) {
+  if (homing) {
+    visited.length = 0;
+    visited.push(hash);
+    homing = false;
+    navDir = 'back';
+  } else if (replacing) {
     visited[visited.length - 1] = hash;
     replacing = false;
     navDir = 'fade';
@@ -234,6 +246,11 @@ window.addEventListener('hashchange', () => {
 });
 
 $app.addEventListener('click', e => {
+  if (e.target.closest('[data-home]')) {
+    e.preventDefault();
+    goHome();
+    return;
+  }
   const back = e.target.closest('[data-back]');
   if (back) {
     e.preventDefault();
@@ -723,7 +740,7 @@ function viewJoin() {
 // アルバムの中の画面（釣行・地図・一覧）の上のバー：左は「アルバム」一覧へ戻る、右は設定
 function albumTopbar(albumId) {
   return `<header class="topbar album-bar">
-    <span class="topbar-side"><button class="back-pill" data-back="#/" aria-label="アルバムの一覧に戻る">${icon('back')}<span>アルバム</span></button></span>
+    <span class="topbar-side"><a class="back-pill" href="#/" data-home aria-label="アルバムの一覧へ">${icon('back')}<span>アルバム</span></a></span>
     <h1>${esc(albumTitle(albumId))}</h1>
     <span class="topbar-side right"><a class="icon-btn" href="#/a/${esc(albumId)}/settings" aria-label="設定">${icon('settings')}</a></span>
   </header>`;
