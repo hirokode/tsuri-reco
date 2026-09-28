@@ -5,7 +5,7 @@
 //   #/a/<id>/invite        招待リンクを送る（アルバム作成直後）
 //   #/a/<id>/map | list    アルバム（地図／一覧）
 //   #/a/<id>/new?lat=&lng=&place= 釣果の登録（?draft=<id> で「釣れた！」の下書きの続き）
-//   #/a/<id>/trip          釣行（開始・終了・釣れた！・釣行カード）
+//   #/a/<id>/trip          釣行（開始・終了・釣れた！）
 //   #/a/<id>/c/<cid>       詳細
 //   #/a/<id>/c/<cid>/edit  編集
 //   #/a/<id>/settings      設定
@@ -1045,10 +1045,32 @@ function viewAlbum(albumId, tab) {
           ${trips.length ? trips.map(t => `<label class="route-item">
             <input type="checkbox" data-trip="${esc(t.trip_id)}" ${shown.has(t.trip_id) ? 'checked' : ''}>
             <span class="route-swatch" style="background:${tripColor(t)}"></span>
-            <span>${esc(tripTitle(albumId, t))}</span></label>`).join('') : '<p class="muted small">まだ釣行がありません。「釣行」タブから開始できます。</p>'}`;
+            <span class="grow">${esc(tripTitle(albumId, t))}</span>
+            ${t.member_id === sessionFor(albumId).member_id && !t._unsent ? `<button type="button" class="btn small text" data-del-trip="${esc(t.trip_id)}">削除</button>` : ''}</label>`).join('') : '<p class="muted small">まだ釣行がありません。「釣行」タブから開始できます。</p>'}`;
       }
-      panel.addEventListener('click', e => {
+      panel.addEventListener('click', async e => {
         if (e.target.closest('[data-close]')) panel.hidden = true;
+        const del = e.target.closest('[data-del-trip]');
+        if (!del) return;
+        e.preventDefault(); // チェックボックスを切り替えない
+        const id = del.dataset.delTrip;
+        if (!confirm('この釣行を削除しますか？（釣果は消えません。ルートとひも付けが消えます）')) return;
+        busy(true, '削除しています…');
+        try {
+          await api('deleteTrip', { token: sessionFor(albumId).token, trip_id: id });
+          st.data.trips = st.data.trips.filter(t => t.trip_id !== id);
+          st.data.catches.forEach(c => { if (c.trip_id === id) c.trip_id = ''; });
+          saveStateCache(albumId);
+          shown.delete(id);
+          setRouteShown(albumId, [...shown]);
+          drawRoutes();
+          drawPanel();
+          toast('削除しました');
+        } catch (err) {
+          toast(err.message, 4000);
+        } finally {
+          busy(false);
+        }
       });
       panel.addEventListener('change', e => {
         const id = e.target.dataset.trip;
@@ -1059,7 +1081,7 @@ function viewAlbum(albumId, tab) {
         const t = tripsOf(albumId).find(x => x.trip_id === id);
         if (e.target.checked && t) fitTrip(t);
       });
-      // 釣行カードの「ルートを地図で見る」から来たとき（?trip=）
+      // 詳細画面の「釣行のルートを見る」から来たとき（?trip=）
       const focus = parseRoute().params.get('trip');
       let focused = false;
       const focusTrip = () => {
@@ -1918,60 +1940,43 @@ function viewTrip(albumId) {
     const hm = d => `${d.getHours()}:${pad(d.getMinutes())}`;
     const myTripCatches = t => catchesOf(albumId).filter(c => c.trip_id === t.trip_id
       || (!c.trip_id && Date.parse(c.caught_at) >= Date.parse(t.started_at) && (c.angler_member_id === session.member_id)));
-    let html = '';
-    if (st.error && st.error.code === 'invalid_token') html += invalidTokenBox(albumId);
+    // 画面いっぱいの海。カードは出さない（過去の釣行は地図の「ルート」から見る・消す）
+    let notes = '';
+    if (st.error && st.error.code === 'invalid_token') notes += invalidTokenBox(albumId);
     if (unsent.length) {
-      html += `<div class="notice info"><p>送信待ちの釣行が${unsent.length}件あります（電波が戻ったら送ります）。</p>
+      notes += `<div class="notice info"><p>送信待ちの釣行が${unsent.length}件あります（電波が戻ったら送ります）。</p>
         <button class="btn small" id="resend-btn">今すぐ送る</button></div>`;
     }
+    let hero;
     if (trip) {
       const started = new Date(trip.started_at);
       const catches = myTripCatches(trip);
-      html += `<section class="trip-hero live">
-          <p class="trip-state"><span class="rec-dot"></span>釣行中</p>
-          <p class="trip-time"><b>${fmtDuration(Date.now() - started)}</b><span>${hm(started)} 開始・記録 ${trip.points.length}か所</span></p>
-          <button class="orb coral" id="hit-btn"><span class="orb-icon">📍</span>釣れた！</button>
-          <p class="hero-note">押すと、今の時刻と現在地だけの下書きを作ります</p>
-        </section>
-        <div class="row trip-actions">
-          <a class="btn grow" href="#/a/${esc(albumId)}/new">${icon('plus')} 釣果を登録</a>
-          <button class="btn danger grow" id="end-btn">釣行を終了</button>
-        </div>
-        <h2 class="section-title">この釣行の釣果 <span class="muted small">${catches.length}件</span></h2>
-        ${catches.length ? `<div class="catch-list">${catches.map(c => catchCard(albumId, c)).join('')}</div>` : '<p class="muted small">まだありません。</p>'}`;
+      hero = `<section class="trip-hero live">
+          <div class="hero-top">
+            <p class="trip-state"><span class="rec-dot"></span>釣行中</p>
+            <p class="trip-time"><b>${fmtDuration(Date.now() - started)}</b><span>${hm(started)} 開始・釣果 ${catches.length}件・記録 ${trip.points.length}か所</span></p>
+          </div>
+          <div class="hero-mid">
+            <button class="orb coral" id="hit-btn"><span class="orb-icon">📍</span>釣れた！</button>
+            <p class="hero-note">押すと、今の時刻と現在地だけの下書きを作ります</p>
+          </div>
+          <div class="hero-actions">
+            <a class="btn glass" href="#/a/${esc(albumId)}/new">${icon('plus')} 釣果を登録</a>
+            <button class="btn glass" id="end-btn">釣行を終了</button>
+          </div>
+        </section>`;
     } else {
-      html += `<section class="trip-hero">
-          <p class="hero-greet">今日はどこで釣る？</p>
-          <button class="orb" id="start-btn"><span class="orb-icon">🎣</span>釣行を<br>開始</button>
-          <p class="hero-note">開始・終了の時刻と位置を記録して、釣行カードを作ります</p>
-        </section>
-        <p class="muted small trip-privacy">位置を記録するのは、開始・終了、アプリを開いたとき、「釣れた！」・釣果登録のときだけです（自分の位置のみ・釣行中のみ。見られるのはアルバムのメンバーだけ）。</p>`;
+      hero = `<section class="trip-hero">
+          <div class="hero-top"><p class="hero-greet">今日はどこで釣る？</p></div>
+          <div class="hero-mid">
+            <button class="orb" id="start-btn"><span class="orb-icon">🎣</span>釣行を<br>開始</button>
+            <p class="hero-note">開始・終了の時刻と位置を記録します。ルートは地図の「ルート」から見られます</p>
+          </div>
+          <p class="hero-privacy">位置を記録するのは、開始・終了、アプリを開いたとき、「釣れた！」・釣果登録のときだけです（自分の位置のみ・釣行中のみ。見られるのはアルバムのメンバーだけ）。</p>
+        </section>`;
     }
-    const trips = tripsOf(albumId);
-    html += `<h2 class="section-title">釣行カード</h2>`;
-    html += trips.length ? trips.map(t => {
-      const s = new Date(t.started_at);
-      const e = new Date(t.ended_at);
-      const n = catchesOf(albumId).filter(c => c.trip_id === t.trip_id);
-      const fish = n.reduce((k, c) => k + (Number(c.count) || 1), 0);
-      const mine = t.member_id === session.member_id;
-      return `<section class="card trip-card">
-        <div class="trip-card-head"><h3>${s.getFullYear()}/${pad(s.getMonth() + 1)}/${pad(s.getDate())}（${'日月火水木金土'[s.getDay()]}）</h3>
-          ${t._unsent ? '<span class="chip">送信待ち</span>' : ''}${t.auto_ended ? '<span class="chip">自動で終了</span>' : ''}</div>
-        <dl class="fields">
-          <dt>時間</dt><dd>${hm(s)}〜${hm(e)}（${fmtDuration(e - s)}）</dd>
-          <dt>釣果</dt><dd>${fish}匹（${n.length}件）</dd>
-          <dt>記録</dt><dd>${(t.points || []).length}か所</dd>
-          <dt>釣った人</dt><dd>${esc(memberName(albumId, t.member_id))}</dd>
-        </dl>
-        <div class="row">
-          <a class="btn small grow" href="#/a/${esc(albumId)}/map?trip=${esc(t.trip_id)}">${icon('map')} ルートを地図で見る</a>
-          ${mine && !t._unsent ? `<button class="btn small text" data-del-trip="${esc(t.trip_id)}">削除</button>` : ''}
-        </div>
-      </section>`;
-    }).join('') : '<p class="muted small">まだ釣行がありません。</p>';
 
-    $app.innerHTML = `${albumTopbar(albumId)}<main class="page with-tabbar">${html}</main>${tabbar(albumId, 'trip')}`;
+    $app.innerHTML = `${albumTopbar(albumId)}<main class="trip-page">${notes ? `<div class="trip-notes">${notes}</div>` : ''}${hero}</main>${tabbar(albumId, 'trip')}`;
 
     const start = document.getElementById('start-btn');
     if (start) start.addEventListener('click', async () => {
@@ -2003,22 +2008,6 @@ function viewTrip(albumId) {
     });
     const resend = document.getElementById('resend-btn');
     if (resend) resend.addEventListener('click', () => sendTrips(albumId));
-    $app.querySelectorAll('[data-del-trip]').forEach(b => b.addEventListener('click', async () => {
-      if (!confirm('この釣行を削除しますか？（釣果は消えません。ルートとひも付けが消えます）')) return;
-      busy(true, '削除しています…');
-      try {
-        await api('deleteTrip', { token: session.token, trip_id: b.dataset.delTrip });
-        st.data.trips = st.data.trips.filter(t => t.trip_id !== b.dataset.delTrip);
-        st.data.catches.forEach(c => { if (c.trip_id === b.dataset.delTrip) c.trip_id = ''; });
-        saveStateCache(albumId);
-        toast('削除しました');
-        draw();
-      } catch (err) {
-        toast(err.message, 4000);
-      } finally {
-        busy(false);
-      }
-    }));
   }
 
   current.refresh = draw;
