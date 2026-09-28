@@ -171,6 +171,7 @@ function icon(name) {
     edit: '<path d="M4 20h4L19 9l-4-4L4 16z M13 7l4 4"/>',
     trip: '<path d="M6.5 12c2.2-3.6 5.4-5.5 8.8-5.5 2.6 0 4.5 2 5.7 5.5-1.2 3.5-3.1 5.5-5.7 5.5-3.4 0-6.6-1.9-8.8-5.5z M6.5 12L2.5 8v8z"/><circle cx="16.6" cy="10.8" r=".6"/>',
     stop: '<rect x="7" y="7" width="10" height="10" rx="2"/>',
+    moon: '<path d="M19.5 14.5A8 8 0 019.5 4.5a8 8 0 1010 10z"/>',
     tide: '<path d="M3 9.5c2.2 0 2.3-2 4.5-2s2.3 2 4.5 2 2.3-2 4.5-2 2.3 2 4.5 2 M3 15.5c2.2 0 2.3-2 4.5-2s2.3 2 4.5 2 2.3-2 4.5-2 2.3 2 4.5 2"/>'
   };
   return `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${paths[name] || ''}</svg>`;
@@ -2064,9 +2065,9 @@ function viewTideMonth(albumId, params) {
   const m = /^(\d{4})-(\d{2})$/.exec(params.get('m') || '');
   const year = m ? Number(m[1]) : now.getFullYear();
   const mon = m ? Number(m[2]) : now.getMonth() + 1;
-  const filters = { g2: false, g1: false }; // オンにした種類の印がある日だけ出す
+  const filters = { name: false, flow: false }; // 絞り込み（オンにした条件をすべて満たす日だけ）
   let showPast = false;                      // 今日より前の日は、ボタンを押すまで隠す
-  let view = getSettings().tideView === 'cal' ? 'cal' : 'list';
+  let view = 'cal'; // 最初はカレンダー
   let selected = null;                       // カレンダーで選んだ日
   let req = 0;
   let result = null; // { spotKey, month, days, lo, hi }
@@ -2101,9 +2102,9 @@ function viewTideMonth(albumId, params) {
           <button type="button" data-view="list" aria-pressed="${view === 'list'}">リスト</button>
           <button type="button" data-view="cal" aria-pressed="${view === 'cal'}">カレンダー</button>
         </div>
-        <div class="tm-legend">
-          <label class="switch"><input type="checkbox" data-filter="g2" ${filters.g2 ? 'checked' : ''}><span class="switch-track"></span><i class="lg-band g2"></i>◎ 潮名も同じ</label>
-          <label class="switch"><input type="checkbox" data-filter="g1" ${filters.g1 ? 'checked' : ''}><span class="switch-track"></span><i class="lg-band g1"></i>○ 流れ・潮位が似ている</label>
+        <div class="tm-filters" role="group" aria-label="絞り込み">
+          <button type="button" class="fchip" data-filter="name" aria-pressed="${filters.name}">${icon('moon')}潮名が同じ</button>
+          <button type="button" class="fchip" data-filter="flow" aria-pressed="${filters.flow}">${icon('tide')}流れが似ている</button>
         </div>
         <div id="tm-days"><div class="skeleton-card"></div></div>`;
     }
@@ -2111,13 +2112,13 @@ function viewTideMonth(albumId, params) {
     if (!spot) return;
 
     document.getElementById('spot-select').addEventListener('change', e => { location.hash = monthHref(e.target.value, 0).replace(/&amp;/g, '&'); });
-    $app.querySelectorAll('[data-filter]').forEach(el => el.addEventListener('change', () => {
-      filters[el.dataset.filter] = el.checked;
+    $app.querySelectorAll('[data-filter]').forEach(el => el.addEventListener('click', () => {
+      filters[el.dataset.filter] = !filters[el.dataset.filter];
+      el.setAttribute('aria-pressed', String(filters[el.dataset.filter]));
       drawDays();
     }));
     $app.querySelectorAll('[data-view]').forEach(el => el.addEventListener('click', () => {
       view = el.dataset.view;
-      saveSettings({ tideView: view });
       $app.querySelectorAll('[data-view]').forEach(b => b.setAttribute('aria-pressed', String(b === el)));
       drawDays();
     }));
@@ -2154,14 +2155,19 @@ function viewTideMonth(albumId, params) {
         <ul class="tm-pats">${patterns.map(p => {
           const d = new Date(p.t);
           return `<li><span class="muted">${d.getFullYear() !== year ? `${d.getFullYear()}/` : ''}${d.getMonth() + 1}/${d.getDate()} ${jstTime(p.t)}</span> <b>${esc(p.name)}・${esc(p.label)}・${p.level}cm</b> <span class="muted">${esc(p.species || '')}</span></li>`;
-        }).join('')}</ul>
-        <p class="muted small">似ている＝流れ（上げ／下げ○分）の差が${LIKE_STAGE}分以内・潮位の差が${LIKE_LEVEL}cm以内・潮の上下幅（干潮〜満潮の差）の違いが${LIKE_SWING * 100}%以内。潮名も同じなら◎、違えば○。</p>`
+        }).join('')}</ul>`
       : '<p class="muted small">このポイントの釣果の時刻では、潮位のデータが見つかりませんでした。</p>';
   }
 
   const isPast = day => day.start + 86400000 <= Date.now();
-  const filtering = () => filters.g2 || filters.g1;
-  const matches = day => !filtering() || (filters.g2 && day.has2) || (filters.g1 && day.has1);
+  // 絞り込みは重ねがけ：潮名が同じ → 流れが似ている、の両方なら「潮名が同じ回と、流れも似ている時間がある日」（◎）
+  const filtering = () => filters.name || filters.flow;
+  const matches = day => {
+    if (filters.name && filters.flow) return day.has2;
+    if (filters.name) return day.sameName;
+    if (filters.flow) return day.has1 || day.has2;
+    return true;
+  };
   const WD = '日月火水木金土';
 
   function dayCardHtml(day) {
@@ -2188,7 +2194,7 @@ function viewTideMonth(albumId, params) {
         if (!day) return '<span></span>';
         const hidden = isPast(day) && !showPast;
         const on = !hidden && matches(day);
-        const mark = on && (filters.g2 || !filtering() ? day.has2 : false) ? '◎' : on && day.has1 && (filters.g1 || !filtering()) ? '○' : '';
+        const mark = !on ? '' : day.has2 ? '◎' : day.has1 && !(filters.name && filters.flow) ? '○' : '';
         const cls = ['tm-cell', hidden ? 'past' : '', !on && !hidden ? 'dim' : '', mark === '◎' ? 'g2' : mark === '○' ? 'g1' : '', selected === day.d ? 'sel' : ''].filter(Boolean).join(' ');
         return `<button type="button" class="${cls}" data-cal="${day.d}" ${hidden ? 'disabled' : ''} aria-label="${mon}/${day.d} ${esc(day.name)}${mark ? ' ' + mark : ''}">
           <b>${day.d}</b><small>${hidden ? '' : esc(day.name.slice(0, 1))}</small><i>${mark}</i></button>`;
@@ -2204,21 +2210,23 @@ function viewTideMonth(albumId, params) {
       el.innerHTML = '<p class="muted small tm-empty">この月の潮位データはありません（前年〜来年の分まで見られます）。</p>';
       return;
     }
+    const names = new Set(result.patterns.map(p => p.name));
     for (const d of days) {
+      d.sameName = names.has(d.name);
       d.has2 = d.windows.some(w => w.grade === 2);
       d.has1 = d.windows.some(w => w.grade === 1);
     }
     const past = days.filter(isPast);
     const visible = days.filter(d => showPast || !isPast(d));
-    const like = visible.filter(d => d.grade);
     const pastBtn = past.length
       ? `<button type="button" class="btn small block tm-past" id="toggle-past">${showPast ? '過去の日を隠す' : `過去の日を表示する（${past.length}日）`}</button>`
       : '';
-    const count = `<p class="muted small tm-count">${past.length && !showPast ? '今日から' : 'この月で'}、似ている時間がある日：${like.length}日（◎${visible.filter(d => d.has2).length}日・○${visible.filter(d => d.has1).length}日）</p>`;
+    const hit = visible.filter(d => d.grade && matches(d));
+    const count = `<p class="muted small tm-count">${past.length && !showPast ? '今日から' : 'この月'}　<b>◎</b> ${hit.filter(d => d.has2).length}日　<b>○</b> ${hit.filter(d => !d.has2).length}日${filtering() ? `　（絞り込み中：${visible.filter(matches).length}日）` : ''}</p>`;
     const source = `<p class="muted small tm-source">${esc(month.station.name)}（約${Math.round(month.km)}km）の予測です。出典：気象庁「潮位表」。川の上流などでは時刻が遅れることがあります。</p>`;
 
     if (view === 'cal') {
-      const inMonth = d => days.find(x => x.d === d && (showPast || !isPast(x)));
+      const inMonth = d => days.find(x => x.d === d && (showPast || !isPast(x)) && matches(x)); // 絞り込み中は当てはまる日を選ぶ
       if (!inMonth(selected)) {
         const today = new Date();
         const t = today.getFullYear() === year && today.getMonth() + 1 === mon ? today.getDate() : null;
