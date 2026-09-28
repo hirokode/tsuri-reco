@@ -45,6 +45,7 @@
 | js/photos.js | 撮影日時の読み取り・圧縮・写真URLの組み立て（1か所） |
 | js/map.js | Leaflet の地図（レイヤー切替・クラスタ・長押し・ピン指定） |
 | js/tide.js | 潮名の計算（日付の月齢から）・潮位（data/tide/ の気象庁潮位表を読む） |
+| js/trip.js | 釣行（端末での記録・位置の記録・「釣れた！」の下書き・送信待ち・終了し忘れ・位置の推定） |
 | config.js | GAS の `/exec` URL（API_URL）だけを書く |
 | sw.js / manifest.json / icons/ | PWA（ホーム画面追加・画像キャッシュ） |
 | gas/Code.js | doGet / doPost・API の振り分け・`setup()` |
@@ -80,10 +81,13 @@
 |---|---|
 | albums | album_id, name, created_at, drive_folder_id, icon_photo |
 | members | member_id, album_id, display_name, token, joined_at |
-| catches | catch_id, album_id, caught_at, lat, lng, place_name, species, size_cm, weight_g, count, angler_member_id, tide_name, tide_events, method, bait, memo, photo_ids, created_by, created_at, updated_by, updated_at, deleted, hits |
+| catches | catch_id, album_id, caught_at, lat, lng, place_name, species, size_cm, weight_g, count, angler_member_id, tide_name, tide_events, method, bait, memo, photo_ids, created_by, created_at, updated_by, updated_at, deleted, hits, trip_id, loc_source, draft |
+| trips | trip_id, album_id, member_id, started_at, ended_at, start_lat, start_lng, end_lat, end_lng, points, auto_ended, created_at, updated_at, deleted |
 
 - ID は UUID。削除は論理削除（deleted=true）
-- tide_events・photo_ids・icon_photo・hits は JSON 文字列
+- tide_events・photo_ids・icon_photo・hits・points は JSON 文字列
+- loc_source は位置の出どころ（button＝「釣れた！」／estimated＝撮影時刻から推定／manual＝手動）。draft は「釣れた！」の下書き（魚種などが空でもよい）
+- trips（釣行）は端末で記録し、終了時に saveTrip でまとめて送る。trip_id・下書きの catch_id は端末で作る UUID（再送しても重複しない）。釣行を変更・削除できるのは本人だけ
 - hits は「釣れた回」[{at, count, photos, species, size_cm, weight_g, angler_member_id, tide_name, method, bait, memo}]（時刻順・写真は1回5枚まで）。2回以上のときだけ入れる。
   釣果の列は回のまとめ：caught_at＝最初の回・count＝合計・species＝重ならないように「・」でつなぐ・size_cm/weight_g＝最大・photo_ids＝各回の写真をつなげたもの・そのほか＝最初の回（GAS の hitSummary_ と画面の summarizeHits で同じ決め方）
 - 位置（lat・lng）と場所名（place_name）だけは釣果全体で1つ
@@ -92,6 +96,8 @@
 
 - 列を増やすときは `gas/` のヘッダー定義と既存シートの見出し行の両方を更新する（既存の列の順番は変えない）
 - 潮位は気象庁「潮位表」の予測値。画面に出すときは出典（気象庁）を必ず書く
+- 釣行で記録する位置は「自分の位置・釣行中・決まったタイミング（開始・開いたとき・釣れた！・釣果登録・終了）」だけ。定期的な位置の取得やバックグラウンドでの取得はしない
+- 写真の位置情報（EXIF の GPS）は使わない。位置は「釣れた！」＞撮影時刻からの推定＞手動 の順で決める
 - 写真の表示URLの組み立ては `js/photos.js` の `photoUrl()` にまとめる（将来の保存先移行に備えるため）
 - 写真は位置情報を使わない・残さない。画面側は canvas で描き直して EXIF を落とし、GAS 側でも `stripJpegMetadata_()` で取り除いてから保存する
 - ユーザーが入力した文字を画面に出すときは必ず `esc()` を通す（トークンを盗まれないように）

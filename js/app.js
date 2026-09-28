@@ -4,7 +4,8 @@
 //   #/join                 招待から参加
 //   #/a/<id>/invite        招待リンクを送る（アルバム作成直後）
 //   #/a/<id>/map | list    アルバム（地図／一覧）
-//   #/a/<id>/new?lat=&lng= 釣果の登録
+//   #/a/<id>/new?lat=&lng=&place= 釣果の登録（?draft=<id> で「釣れた！」の下書きの続き）
+//   #/a/<id>/trip          釣行（開始・終了・釣れた！・釣行カード）
 //   #/a/<id>/c/<cid>       詳細
 //   #/a/<id>/c/<cid>/edit  編集
 //   #/a/<id>/settings      設定
@@ -16,7 +17,11 @@ import {
 } from './api.js';
 import { MAX_PHOTOS, photoImg, preparePhoto, prepareIcon, blobToBase64 } from './photos.js';
 import { tideForDate, tideLevel, jstTime } from './tide.js';
-import { LAYERS, mapReady, createCatchMap, createPickerMap, createMiniMap, getCurrentPosition } from './map.js';
+import {
+  activeTrip, startTrip, endTrip, recordPoint, recordOpen, addHitDraft, removeDraft, outbox, flushOutbox,
+  staleState, estimatePoint, lastPointTime
+} from './trip.js';
+import { LAYERS, ROUTE_COLORS, mapReady, createCatchMap, createPickerMap, createMiniMap, getCurrentPosition } from './map.js';
 
 const $app = document.getElementById('app');
 const TIDES = ['大潮', '中潮', '小潮', '長潮', '若潮'];
@@ -162,7 +167,8 @@ function icon(name) {
     camera: '<path d="M4 8h3l2-2.5h6L17 8h3v11H4z"/><circle cx="12" cy="13.5" r="3.5"/>',
     pin: '<path d="M12 21s-6.5-6.2-6.5-11a6.5 6.5 0 0113 0c0 4.8-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/>',
     x: '<path d="M6 6l12 12M18 6L6 18"/>',
-    edit: '<path d="M4 20h4L19 9l-4-4L4 16z M13 7l4 4"/>'
+    edit: '<path d="M4 20h4L19 9l-4-4L4 16z M13 7l4 4"/>',
+    trip: '<path d="M5 21V4 M5 4h11l-2 4 2 4H5"/>'
   };
   return `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${paths[name] || ''}</svg>`;
 }
@@ -296,6 +302,7 @@ function renderView() {
     if (sub === 'map' || sub === 'list') return viewAlbum(albumId, sub);
     if (sub === 'new') return viewForm(albumId, null, params);
     if (sub === 'settings') return viewSettings(albumId);
+    if (sub === 'trip') return viewTrip(albumId);
     if (sub === 'edit') return viewAlbumEdit(albumId);
     if (sub === 'c' && parts[3]) {
       if (parts[4] === 'edit') return viewForm(albumId, parts[3], params);
@@ -354,7 +361,42 @@ function saveStateCache(albumId) {
 function catchesOf(albumId) {
   const st = stateOf(albumId);
   const saved = st.data ? st.data.catches : [];
-  return [...st.pending, ...saved].sort((a, b) => (a.caught_at < b.caught_at ? 1 : a.caught_at > b.caught_at ? -1 : 0));
+  const ids = new Set(saved.map(c => c.catch_id));
+  const drafts = localDrafts(albumId).filter(d => !ids.has(d.catch_id));
+  return [...st.pending, ...drafts, ...saved].sort((a, b) => (a.caught_at < b.caught_at ? 1 : a.caught_at > b.caught_at ? -1 : 0));
+}
+
+// 「釣れた！」の下書きのうち、まだ送っていないもの（進行中の釣行と送信待ち）を釣果の形にする
+function localDrafts(albumId) {
+  const session = sessionFor(albumId);
+  const trips = [activeTrip(albumId), ...outbox(albumId)].filter(Boolean);
+  return trips.flatMap(t => t.drafts.map(d => ({
+    catch_id: d.draft_id, caught_at: d.caught_at, lat: d.lat, lng: d.lng, place_name: '', species: '', count: 1,
+    angler_member_id: session ? session.member_id : '', photo_ids: [], draft: true, loc_source: 'button', trip_id: t.trip_id,
+    _localDraft: true
+  })));
+}
+
+// 釣行（サーバーのもの＋送信待ち）。新しい順
+function tripsOf(albumId) {
+  const st = stateOf(albumId);
+  const saved = (st.data && st.data.trips) || [];
+  const ids = new Set(saved.map(t => t.trip_id));
+  return [...outbox(albumId).filter(t => !ids.has(t.trip_id)).map(t => ({ ...t, _unsent: true })), ...saved]
+    .sort((a, b) => (a.started_at < b.started_at ? 1 : -1));
+}
+
+const LOC_SOURCE_LABEL = { button: '📍釣れた！', estimated: '推定', manual: '手動' };
+function locSourceChip(c) {
+  return c.loc_source ? `<span class="loc-src">位置：${esc(LOC_SOURCE_LABEL[c.loc_source] || '')}</span>` : '';
+}
+
+// 2点の距離（m）
+function distanceM(a, b) {
+  const R = Math.PI / 180;
+  const x = (b.lng - a.lng) * R * Math.cos(((a.lat + b.lat) / 2) * R);
+  const y = (b.lat - a.lat) * R;
+  return Math.sqrt(x * x + y * y) * 6371000;
 }
 
 function memberName(albumId, memberId) {
@@ -686,7 +728,7 @@ function tabbar(albumId, active) {
   return `<nav class="tabbar">
     ${tab('map', '地図', `#/a/${albumId}/map`)}
     ${tab('list', '一覧', `#/a/${albumId}/list`)}
-    ${tab('plus', '登録', `#/a/${albumId}/new`)}
+    ${tab('trip', '釣行', `#/a/${albumId}/trip`)}
   </nav>`;
 }
 
@@ -786,22 +828,29 @@ function catchSummary(c) {
   return bits.join('・');
 }
 
+// 下書きの続きを入れる画面（端末だけの下書きは新規登録、送った下書きは編集）
+function draftHref(albumId, c) {
+  return c._localDraft ? `#/a/${albumId}/new?draft=${c.catch_id}` : `#/a/${albumId}/c/${c.catch_id}/edit`;
+}
+
 function catchCard(albumId, c) {
   const status = c._pending === 'sending' ? '<span class="chip">送信中…</span>'
-    : c._pending === 'error' ? `<span class="chip error">送信失敗</span>` : '';
+    : c._pending === 'error' ? `<span class="chip error">送信失敗</span>`
+    : c.draft ? `<span class="chip draft">下書き${c._localDraft ? '（釣行の終了時に送信）' : ''}</span>` : '';
   const body = `
     <div class="catch-thumb">${catchThumb(albumId, c)}</div>
     <div class="catch-body">
-      <h3>${esc(c.species)} <span class="size">${esc(catchSummary(c))}</span></h3>
+      <h3>${c.species ? esc(c.species) : '<span class="muted">魚種はまだ</span>'} <span class="size">${esc(catchSummary(c))}</span></h3>
       <p class="muted">${esc(c.place_name || '場所名なし')}</p>
       <p class="muted small">${esc(fmtDateTime(c.caught_at))}${hitsOf(c).length > 1 ? '〜' + esc(fmtHitTime(hitsOf(c).at(-1).at, c.caught_at)) : ''}・${esc(memberName(albumId, c.angler_member_id))}</p>
-      ${status}
+      ${status}${locSourceChip(c)}
       ${c._pending === 'error' ? `<p class="small error-text">${esc(c._error || '')}</p>
         <div class="row"><button class="btn small" data-retry="${esc(c.catch_id)}">再送する</button>
         <button class="btn small text" data-discard="${esc(c.catch_id)}">取り消す</button></div>` : ''}
     </div>`;
   if (c._pending) return `<div class="catch-card pending">${body}</div>`;
-  return `<a class="catch-card" href="#/a/${esc(albumId)}/c/${esc(c.catch_id)}">${body}</a>`;
+  if (c._localDraft) return `<a class="catch-card draft" href="${esc(draftHref(albumId, c))}">${body}</a>`;
+  return `<a class="catch-card${c.draft ? ' draft' : ''}" href="#/a/${esc(albumId)}/c/${esc(c.catch_id)}">${body}</a>`;
 }
 
 let lastMapView = {}; // アルバムごとの地図の表示位置（タブを行き来しても保つ）
@@ -810,7 +859,7 @@ function viewAlbum(albumId, tab) {
   const st = stateOf(albumId);
   $app.innerHTML = `${albumTopbar(albumId)}
     <main class="${tab === 'map' ? 'map-page' : 'page with-tabbar'}" id="album-main"></main>
-    ${tab === 'list' ? `<a class="fab" href="#/a/${esc(albumId)}/new" aria-label="釣果を登録">${icon('plus')}</a>` : ''}
+    <a class="fab${tab === 'map' ? ' on-map' : ''}" href="#/a/${esc(albumId)}/new" aria-label="釣果を登録">${icon('plus')}</a>
     ${tabbar(albumId, tab)}`;
   const main = document.getElementById('album-main');
 
@@ -837,8 +886,11 @@ function viewAlbum(albumId, tab) {
       main.innerHTML = errorBox('地図の部品を読み込めませんでした。電波の良い所で開き直してください。');
     } else {
       main.innerHTML = `<div id="map" class="map-full"></div>
-        <p class="map-hint">地図を長押しすると、その場所で釣果を登録できます</p>`;
+        <p class="map-hint">地図を長押しすると、その場所で釣果を登録できます</p>
+        <div class="route-panel" id="route-panel" hidden></div>`;
+      const panel = document.getElementById('route-panel');
       const cm = createCatchMap(document.getElementById('map'), {
+        onRouteButton: () => { panel.hidden = !panel.hidden; if (!panel.hidden) drawPanel(); },
         layerKey: getSettings().layer,
         catches: catchesOf(albumId),
         view: lastMapView[albumId],
@@ -850,8 +902,58 @@ function viewAlbum(albumId, tab) {
         },
         onError: msg => toast(msg, 4000)
       });
+
+      // 釣行のルート：表示する釣行は端末に記憶（最初はすべて非表示）
+      const shown = new Set(getRouteShown(albumId));
+      // 色は古い釣行から順に割り当てる（新しい釣行が増えても、前の釣行の色が変わらないように）
+      const tripColor = t => {
+        const list = tripsOf(albumId);
+        return ROUTE_COLORS[(list.length - 1 - list.indexOf(t)) % ROUTE_COLORS.length];
+      };
+      const routeLatLngs = t => (t.points || []).map(p => [p.lat, p.lng]);
+      const drawRoutes = () => cm.setRoutes(tripsOf(albumId).filter(t => shown.has(t.trip_id)).map(t => ({ id: t.trip_id, color: tripColor(t), latlngs: routeLatLngs(t) })));
+      // 釣行が全部入る倍率にする（ルートと、その釣行の釣果）
+      const fitTrip = t => cm.fitTo([...routeLatLngs(t), ...catchesOf(albumId).filter(c => c.trip_id === t.trip_id).map(c => [c.lat, c.lng])]);
+      function drawPanel() {
+        const trips = tripsOf(albumId);
+        panel.innerHTML = `<div class="route-head"><b>釣行のルート</b><button class="icon-btn" data-close aria-label="閉じる">${icon('x')}</button></div>
+          ${trips.length ? trips.map(t => `<label class="route-item">
+            <input type="checkbox" data-trip="${esc(t.trip_id)}" ${shown.has(t.trip_id) ? 'checked' : ''}>
+            <span class="route-swatch" style="background:${tripColor(t)}"></span>
+            <span>${esc(tripTitle(albumId, t))}</span></label>`).join('') : '<p class="muted small">まだ釣行がありません。「釣行」タブから開始できます。</p>'}`;
+      }
+      panel.addEventListener('click', e => {
+        if (e.target.closest('[data-close]')) panel.hidden = true;
+      });
+      panel.addEventListener('change', e => {
+        const id = e.target.dataset.trip;
+        if (!id) return;
+        if (e.target.checked) shown.add(id); else shown.delete(id);
+        setRouteShown(albumId, [...shown]);
+        drawRoutes();
+        const t = tripsOf(albumId).find(x => x.trip_id === id);
+        if (e.target.checked && t) fitTrip(t);
+      });
+      // 釣行カードの「ルートを地図で見る」から来たとき（?trip=）
+      const focus = parseRoute().params.get('trip');
+      let focused = false;
+      const focusTrip = () => {
+        const t = focus && !focused && tripsOf(albumId).find(x => x.trip_id === focus);
+        if (!t) return;
+        focused = true;
+        shown.add(t.trip_id);
+        setRouteShown(albumId, [...shown]);
+        drawRoutes();
+        fitTrip(t);
+      };
+      drawRoutes();
+      focusTrip();
+
       current.refresh = () => {
         cm.setCatches(catchesOf(albumId));
+        drawRoutes();
+        focusTrip();
+        if (!panel.hidden) drawPanel();
         if (st.error) toast(st.error.message, 4000);
       };
       current.cleanup = () => {
@@ -867,15 +969,44 @@ function viewAlbum(albumId, tab) {
   refreshAlbum(albumId);
 }
 
+const NEARBY_M = 30; // 「同じ地点」とみなす半径
+
 function mapPopup(albumId, c) {
   const div = document.createElement('div');
   div.className = 'popup';
+  const href = c._localDraft || c.draft ? draftHref(albumId, c) : `#/a/${albumId}/c/${c.catch_id}`;
+  const nearby = catchesOf(albumId).filter(x => x !== c && !x._pending && isFinite(x.lat) && distanceM(c, x) <= NEARBY_M);
+  const place = c.place_name || (nearby.find(x => x.place_name) || {}).place_name || '';
+  const addHref = `#/a/${albumId}/new?lat=${Number(c.lat).toFixed(6)}&lng=${Number(c.lng).toFixed(6)}${place ? '&place=' + encodeURIComponent(place) : ''}`;
   div.innerHTML = `
     <div class="popup-thumb">${catchThumb(albumId, c)}</div>
-    <b>${esc(c.species)}</b> ${esc(catchSummary(c))}<br>
+    <b>${c.species ? esc(c.species) : '（下書き）'}</b> ${esc(catchSummary(c))}<br>
     <span class="muted small">${esc(fmtDate(c.caught_at))}・${esc(memberName(albumId, c.angler_member_id))}</span>
-    ${c._pending ? '<br><span class="chip">送信中</span>' : `<br><a class="btn small" href="#/a/${esc(albumId)}/c/${esc(c.catch_id)}">詳細を見る</a>`}`;
+    ${c._pending ? '<br><span class="chip">送信中</span>' : `<br><a class="btn small" href="${esc(href)}">${c.draft ? '続きを入力' : '詳細を見る'}</a>`}
+    ${nearby.length ? `<div class="popup-nearby"><p class="muted small">この地点（${NEARBY_M}m以内）の釣果 ${nearby.length}件</p>
+      ${nearby.slice(0, 5).map(x => `<a class="nearby-item" href="${esc(x._localDraft || x.draft ? draftHref(albumId, x) : `#/a/${albumId}/c/${x.catch_id}`)}">
+        <span>${esc(fmtDate(x.caught_at))}</span> <b>${x.species ? esc(x.species) : '下書き'}</b> <span class="muted">${esc(catchSummary(x))}</span></a>`).join('')}
+      ${nearby.length > 5 ? `<p class="muted small">ほか${nearby.length - 5}件</p>` : ''}</div>` : ''}
+    <a class="btn small primary add-here" href="${esc(addHref)}">${icon('plus')} この地点で追加</a>`;
   return div;
+}
+
+// 地図に表示する釣行のルート（端末に記憶）
+function getRouteShown(albumId) {
+  try { return JSON.parse(localStorage.getItem('tr.routes.' + albumId) || '[]'); } catch (e) { return []; }
+}
+function setRouteShown(albumId, ids) {
+  try { localStorage.setItem('tr.routes.' + albumId, JSON.stringify(ids)); } catch (e) { /* 保存できなくても続ける */ }
+}
+
+// 「9/27（土）4:30〜7:10・ひろ・3匹」
+function tripTitle(albumId, t) {
+  const s = new Date(t.started_at);
+  const e = t.ended_at ? new Date(t.ended_at) : null;
+  const wd = '日月火水木金土'[s.getDay()];
+  const hm = d => `${d.getHours()}:${pad(d.getMinutes())}`;
+  const count = catchesOf(albumId).filter(c => c.trip_id === t.trip_id).reduce((n, c) => n + (Number(c.count) || 1), 0);
+  return `${s.getMonth() + 1}/${s.getDate()}（${wd}）${hm(s)}〜${e ? hm(e) : ''}・${memberName(albumId, t.member_id) || '自分'}・${count}匹`;
 }
 
 // ---------- 釣果の新規登録（楽観的更新） ----------
@@ -984,10 +1115,17 @@ function viewForm(albumId, catchId, params) {
     return;
   }
 
-  // 位置：編集なら元の値、長押しから来たならその座標、それ以外は未設定（釣果全体で1つ）
+  // 「釣れた！」の下書き（端末だけにあるもの）の続きを入れるとき
+  const localDraft = !editing && params.get('draft') ? localDrafts(albumId).find(d => d.catch_id === params.get('draft')) : null;
+  // 位置：編集なら元の値、下書きならその地点、長押し・「この地点で追加」から来たならその座標、それ以外は未設定（釣果全体で1つ）
   let loc = null;
   if (orig) loc = { lat: orig.lat, lng: orig.lng };
+  else if (localDraft) loc = { lat: localDraft.lat, lng: localDraft.lng };
   else if (params.get('lat') && params.get('lng')) loc = parseLatLng(`${params.get('lat')},${params.get('lng')}`);
+  // 位置の出どころ：button（釣れた！）／estimated（撮影時刻から推定）／manual（手動）。
+  // 優先順は button ＞ estimated ＞ manual。自動の推定は、button のときと、この画面で自分で位置を決めたときはしない
+  let locSource = orig ? (orig.loc_source || '') : localDraft ? 'button' : loc ? 'manual' : '';
+  let locDecided = editing && orig.loc_source !== 'estimated'; // 前に決めた位置は、推定で上書きしない
   const lastCatch = catchesOf(albumId).find(c => isFinite(c.lat));
   // 日時：'photo'＝写真の撮影日時を使う（既定。写真のある回は変更不可）、'manual'＝自分で入力
   let dateMode = 'photo';
@@ -995,7 +1133,7 @@ function viewForm(albumId, catchId, params) {
   // 時刻順に並べ、最初の回＝釣果の日時。tideTouched：潮を手で選んだ（自動で変えない）。
   // uid：回の目印。入力欄とは並び順ではなく uid で結びつける（並べ替え中に古い欄の値が別の回に入らないように）
   let uidSeq = 0;
-  const hits = (orig ? hitsOf(orig) : [{ at: new Date().toISOString(), count: 1, photos: [], angler_member_id: session.member_id }])
+  const hits = (orig ? hitsOf(orig) : [{ at: localDraft ? localDraft.caught_at : new Date().toISOString(), count: 1, photos: [], angler_member_id: session.member_id }])
     .map(h => ({
       at: toLocalInput(new Date(h.at)),
       count: h.count,
@@ -1030,6 +1168,7 @@ function viewForm(albumId, catchId, params) {
 
         <section class="card">
           <h2>釣り場 <span class="req">必須</span> <span class="muted small">（全部の回で共通）</span></h2>
+          <p class="loc-src-line" id="loc-src"></p>
           <div id="picker" class="picker-map"></div>
           <p class="muted small">地図をタップするとピンが立ちます。ピンはドラッグで動かせます。</p>
           <div class="row">
@@ -1039,7 +1178,7 @@ function viewForm(albumId, catchId, params) {
           <label>緯度, 経度（貼り付けOK）
             <input name="coord" inputmode="decimal" placeholder="35.123456, 138.123456" autocomplete="off">
           </label>
-          <label>場所名<input name="place_name" maxlength="100" value="${esc(orig ? orig.place_name : '')}" placeholder="例：〇〇港 赤灯台"></label>
+          <label>場所名<input name="place_name" maxlength="100" value="${esc(orig ? orig.place_name : params.get('place') || '')}" placeholder="例：〇〇港 赤灯台"></label>
         </section>
 
         <datalist id="species-list">${speciesList.map(sp => `<option value="${esc(sp)}">`).join('')}</datalist>
@@ -1224,9 +1363,22 @@ function viewForm(albumId, catchId, params) {
       toast(err.message, 4000);
     } finally {
       busy(false);
-      if (dateMode === 'photo' && photoTime(hit) && +photoTime(hit) !== +hadTime) toast('写真の撮影日時を入れました');
+      const t = photoTime(hit);
+      if (dateMode === 'photo' && t && +t !== +hadTime) toast('写真の撮影日時を入れました');
       syncDate();
+      if (t) estimateLoc(+t);
     }
+  }
+
+  // 撮影時刻から、釣行の記録で位置を推定する（優先順：釣れた！ ＞ 推定 ＞ 手動）
+  function estimateLoc(t) {
+    if (locSource === 'button' || locDecided) return;
+    const est = estimatePoint(albumId, st.data.trips, session.member_id, t);
+    if (!est) return;
+    const p = est.point;
+    if (loc && locSource === 'estimated' && loc.lat === p.lat && loc.lng === p.lng) return;
+    setLoc({ lat: p.lat, lng: p.lng }, { source: 'estimated' });
+    toast(`撮影時刻（${fmtHitTime(new Date(t).toISOString(), new Date(t).toISOString())}）の釣行記録から位置を推定しました`, 3500);
   }
 
   // ---------- 潮（回ごと） ----------
@@ -1289,8 +1441,12 @@ function viewForm(albumId, catchId, params) {
 
   // ---------- 釣り場（位置） ----------
   let picker = null;
-  function setLoc(value, { fromPicker = false, fromText = false } = {}) {
+  const locSrcEl = document.getElementById('loc-src');
+  function setLoc(value, { fromPicker = false, fromText = false, source } = {}) {
     loc = value ? { lat: Number(value.lat.toFixed(6)), lng: Number(value.lng.toFixed(6)) } : null;
+    if (source) locSource = source;
+    if (!loc) locSource = '';
+    locSrcEl.textContent = loc && locSource ? `位置の出どころ：${{ button: '📍「釣れた！」の記録', estimated: '推定（撮影時刻の釣行記録）', manual: '手動' }[locSource]}` : '';
     if (!fromText) coord.value = loc ? fmtCoord(loc.lat, loc.lng) : '';
     if (loc && picker && !fromPicker) picker.set(loc);
     gmaps.href = loc ? googleMapsUrl(loc.lat, loc.lng) : '#';
@@ -1302,7 +1458,7 @@ function viewForm(albumId, catchId, params) {
       layerKey: settings.layer,
       value: loc,
       fallbackCenter: lastCatch ? { lat: lastCatch.lat, lng: lastCatch.lng } : null,
-      onChange: ll => { dirty = true; setLoc(ll, { fromPicker: true }); }
+      onChange: ll => { dirty = true; locDecided = true; setLoc(ll, { fromPicker: true, source: 'manual' }); }
     });
   } else {
     document.getElementById('picker').innerHTML = '<p class="muted small">地図を読み込めませんでした。現在地か緯度経度で指定してください。</p>';
@@ -1313,7 +1469,8 @@ function viewForm(albumId, catchId, params) {
     if (!coord.value.trim()) return setLoc(null, { fromText: true });
     const ll = parseLatLng(coord.value);
     if (!ll) return toast('「35.123, 138.123」の形で入力してください');
-    setLoc(ll);
+    locDecided = true;
+    setLoc(ll, { source: 'manual' });
   });
   coord.addEventListener('paste', () => setTimeout(() => coord.dispatchEvent(new Event('change')), 0));
   document.getElementById('locate-btn').addEventListener('click', async e => {
@@ -1322,7 +1479,8 @@ function viewForm(albumId, catchId, params) {
     try {
       const p = await getCurrentPosition();
       dirty = true;
-      setLoc(p);
+      locDecided = true;
+      setLoc(p, { source: 'manual' });
       toast('現在地を入れました');
     } catch (err) {
       toast(err.message, 4000);
@@ -1367,7 +1525,7 @@ function viewForm(albumId, catchId, params) {
     if (coord.value.trim()) {
       const typed = parseLatLng(coord.value);
       if (!typed) return toast('緯度経度の形が正しくありません（例：35.123, 138.123）');
-      setLoc(typed);
+      if (typed.lat !== loc?.lat || typed.lng !== loc?.lng) setLoc(typed, { source: 'manual' });
     }
     if (!loc) return toast('釣り場の位置を指定してください（地図をタップ・現在地・緯度経度）');
 
@@ -1391,8 +1549,15 @@ function viewForm(albumId, catchId, params) {
       lat: loc.lat,
       lng: loc.lng,
       place_name: form.elements.place_name.value.trim(),
-      hits: hitData
+      hits: hitData,
+      loc_source: locSource || 'manual',
+      draft: false
     };
+    // 進行中の釣行の時刻なら、その釣行にひも付ける（終わった釣行へのひも付けは GAS がする）
+    const trip = activeTrip(albumId);
+    if (trip && Date.parse(fields.caught_at) >= Date.parse(trip.started_at) - 60000) fields.trip_id = trip.trip_id; // 時刻は分までなので1分の余裕
+    else if (localDraft) fields.trip_id = localDraft.trip_id;
+    else if (orig && orig.trip_id) fields.trip_id = orig.trip_id;
 
     if (!editing) {
       // 先に一覧に出して、裏で送る
@@ -1409,6 +1574,8 @@ function viewForm(albumId, catchId, params) {
         _previews: photos.filter(x => x.kind === 'new').map(x => x.previewUrl)
       };
       st.pending.push(p);
+      if (localDraft) removeDraft(albumId, localDraft.catch_id); // 下書きは、この登録に置きかわる
+      if (trip) recordPoint(albumId, 'catch'); // 釣行中なら、登録した時の位置も記録
       dirty = false;
       replaceHash(`#/a/${albumId}/list`);
       sendPending(albumId, p);
@@ -1460,6 +1627,7 @@ function viewDetail(albumId, catchId) {
     }
     const hs = hitsOf(c);
     const many = hs.length > 1;
+    const trip = c.trip_id ? tripsOf(albumId).find(t => t.trip_id === c.trip_id) : null;
     const fieldsHtml = rows => `<dl class="fields">${rows.filter(r => hasValue(r[1])).map(r => `<dt>${esc(r[0])}</dt><dd>${esc(r[1])}</dd>`).join('')}</dl>`;
     const sizeText = h => [hasValue(h.size_cm) ? `${h.size_cm}cm` : '', hasValue(h.weight_g) ? `${h.weight_g}g` : '', h.count > 1 ? `${h.count}匹` : ''].filter(Boolean).join('・');
     // 回ごとのカード（回が1つなら、これまでどおりの1枚のカード）
@@ -1481,10 +1649,12 @@ function viewDetail(albumId, catchId) {
     </section>`;
     const photos = many ? [] : hs[0].photos; // 回が1つなら、写真は上に大きく
 
-    $app.innerHTML = `${topbar(c.species, { back: `#/a/${albumId}/list` })}
+    $app.innerHTML = `${topbar(c.species || '下書き', { back: `#/a/${albumId}/list` })}
       <main class="page detail">
         ${photos.length ? `<div class="gallery" id="gallery">${photos.map(p => `<div class="slide">${photoImg(p.f, 1600)}</div>`).join('')}</div>
           ${photos.length > 1 ? `<div class="dots" id="dots">${photos.map((_, i) => `<span class="${i === 0 ? 'on' : ''}"></span>`).join('')}</div>` : ''}` : ''}
+        ${c.draft ? `<div class="notice info"><p><b>下書き</b>（「釣れた！」で記録した時刻と位置だけ）です。写真や魚種を入れて保存してください。</p>
+          <a class="btn primary block" href="#/a/${esc(albumId)}/c/${esc(c.catch_id)}/edit">続きを入力</a></div>` : ''}
         ${many ? `<section class="card">
           <h2>${esc(c.species)} <span class="size">${esc(catchSummary(c))}</span></h2>
           ${fieldsHtml([
@@ -1497,7 +1667,8 @@ function viewDetail(albumId, catchId) {
         ${hs.some(h => h.tide_name) ? '<section class="card" id="tide-card" hidden></section>' : ''}
         <section class="card">
           <div id="mini-map" class="mini-map"></div>
-          <p class="muted small">${esc(fmtCoord(c.lat, c.lng))}</p>
+          <p class="muted small">${esc(fmtCoord(c.lat, c.lng))} ${locSourceChip(c)}</p>
+          ${trip ? `<a class="btn block" href="#/a/${esc(albumId)}/map?trip=${esc(trip.trip_id)}">${icon('trip')} 釣行のルートを見る（${esc(tripTitle(albumId, trip))}）</a>` : ''}
           <a class="btn block" href="${esc(googleMapsUrl(c.lat, c.lng))}" target="_blank" rel="noopener">Googleマップで開く</a>
         </section>
         <p class="muted small meta">登録：${esc(memberName(albumId, c.created_by))}（${esc(fmtDateTime(c.created_at))}）<br>
@@ -1539,7 +1710,7 @@ function viewDetail(albumId, catchId) {
     }
 
     document.getElementById('delete-btn').addEventListener('click', async () => {
-      if (!confirm(`「${c.species}」の釣果を削除しますか？`)) return;
+      if (!confirm(`「${c.species || '下書き'}」の釣果を削除しますか？`)) return;
       const session = sessionFor(albumId);
       busy(true, '削除しています…');
       try {
@@ -1569,6 +1740,183 @@ function viewDetail(albumId, catchId) {
   current.cleanup = () => { if (mini) mini.remove(); };
   draw();
   refreshAlbum(albumId);
+}
+
+// ---------- 釣行 ----------
+
+// 終了した釣行（送信待ち）を送る。送れたらアルバムを読み直す
+async function sendTrips(albumId, { quiet = false } = {}) {
+  const session = sessionFor(albumId);
+  if (!session || !outbox(albumId).length) return { sent: 0, error: null };
+  const res = await flushOutbox(albumId, trip => api('saveTrip', {
+    token: session.token,
+    trip: { trip_id: trip.trip_id, started_at: trip.started_at, ended_at: trip.ended_at, points: trip.points, auto_ended: !!trip.auto_ended },
+    drafts: trip.drafts
+  }));
+  if (res.sent) {
+    if (!quiet) toast('釣行の記録を送りました');
+    refreshAlbum(albumId);
+  }
+  if (res.error && !quiet) toast(`釣行の記録を送れませんでした（${res.error.message}）。電波のある所で「釣行」を開くと送り直します`, 5000);
+  notify(albumId);
+  return res;
+}
+
+function fmtDuration(ms) {
+  const m = Math.max(0, Math.round(ms / 60000));
+  return m >= 60 ? `${Math.floor(m / 60)}時間${m % 60 ? `${m % 60}分` : ''}` : `${m}分`;
+}
+
+function viewTrip(albumId) {
+  const st = stateOf(albumId);
+  const session = sessionFor(albumId);
+  let timer = null;
+
+  function draw() {
+    const trip = activeTrip(albumId);
+    const unsent = outbox(albumId);
+    const hm = d => `${d.getHours()}:${pad(d.getMinutes())}`;
+    const myTripCatches = t => catchesOf(albumId).filter(c => c.trip_id === t.trip_id
+      || (!c.trip_id && Date.parse(c.caught_at) >= Date.parse(t.started_at) && (c.angler_member_id === session.member_id)));
+    let html = '';
+    if (st.error && st.error.code === 'invalid_token') html += invalidTokenBox(albumId);
+    if (unsent.length) {
+      html += `<div class="notice info"><p>送信待ちの釣行が${unsent.length}件あります（電波が戻ったら送ります）。</p>
+        <button class="btn small" id="resend-btn">今すぐ送る</button></div>`;
+    }
+    if (trip) {
+      const started = new Date(trip.started_at);
+      const catches = myTripCatches(trip);
+      html += `<section class="card trip-live">
+          <p class="trip-state"><span class="rec-dot"></span>釣行中</p>
+          <p class="trip-time">${hm(started)} 開始・<b>${fmtDuration(Date.now() - started)}</b>経過</p>
+          <p class="muted small">記録した地点 ${trip.points.length}か所（最後：${trip.points.length ? hm(new Date(lastPointTime(trip))) : 'なし'}）</p>
+          <button class="hit-btn" id="hit-btn">📍 釣れた！</button>
+          <p class="muted small center">押すと、今の時刻と現在地だけの下書きを作ります。写真や魚種はあとから入れられます。</p>
+          <div class="row">
+            <a class="btn grow" href="#/a/${esc(albumId)}/new">${icon('plus')} 釣果を登録</a>
+            <button class="btn danger grow" id="end-btn">釣行を終了</button>
+          </div>
+        </section>
+        <h2 class="section-title">この釣行の釣果 <span class="muted small">${catches.length}件</span></h2>
+        ${catches.length ? `<div class="catch-list">${catches.map(c => catchCard(albumId, c)).join('')}</div>` : '<p class="muted small">まだありません。</p>'}`;
+    } else {
+      html += `<section class="card trip-start">
+          <button class="btn primary block big" id="start-btn">${icon('trip')} 釣行を開始</button>
+          <p class="muted small">開始・終了の時刻と位置を記録して、釣行カードを作ります。位置を記録するのは、開始・終了、アプリを開いたとき、「釣れた！」・釣果登録のときだけです（自分の位置のみ・釣行中のみ。見られるのはアルバムのメンバーだけ）。</p>
+        </section>`;
+    }
+    const trips = tripsOf(albumId);
+    html += `<h2 class="section-title">釣行カード</h2>`;
+    html += trips.length ? trips.map(t => {
+      const s = new Date(t.started_at);
+      const e = new Date(t.ended_at);
+      const n = catchesOf(albumId).filter(c => c.trip_id === t.trip_id);
+      const fish = n.reduce((k, c) => k + (Number(c.count) || 1), 0);
+      const mine = t.member_id === session.member_id;
+      return `<section class="card trip-card">
+        <div class="trip-card-head"><h3>${s.getFullYear()}/${pad(s.getMonth() + 1)}/${pad(s.getDate())}（${'日月火水木金土'[s.getDay()]}）</h3>
+          ${t._unsent ? '<span class="chip">送信待ち</span>' : ''}${t.auto_ended ? '<span class="chip">自動で終了</span>' : ''}</div>
+        <dl class="fields">
+          <dt>時間</dt><dd>${hm(s)}〜${hm(e)}（${fmtDuration(e - s)}）</dd>
+          <dt>釣果</dt><dd>${fish}匹（${n.length}件）</dd>
+          <dt>記録</dt><dd>${(t.points || []).length}か所</dd>
+          <dt>釣った人</dt><dd>${esc(memberName(albumId, t.member_id))}</dd>
+        </dl>
+        <div class="row">
+          <a class="btn small grow" href="#/a/${esc(albumId)}/map?trip=${esc(t.trip_id)}">${icon('map')} ルートを地図で見る</a>
+          ${mine && !t._unsent ? `<button class="btn small text" data-del-trip="${esc(t.trip_id)}">削除</button>` : ''}
+        </div>
+      </section>`;
+    }).join('') : '<p class="muted small">まだ釣行がありません。</p>';
+
+    $app.innerHTML = `${albumTopbar(albumId)}<main class="page with-tabbar">${html}</main>${tabbar(albumId, 'trip')}`;
+
+    const start = document.getElementById('start-btn');
+    if (start) start.addEventListener('click', async () => {
+      busy(true, '現在地を取得しています…');
+      const res = await startTrip(albumId, session.member_id);
+      busy(false);
+      toast(res.point ? '釣行を開始しました' : '釣行を開始しました（現在地は取れませんでした）', 3500);
+      draw();
+    });
+    const hit = document.getElementById('hit-btn');
+    if (hit) hit.addEventListener('click', async () => {
+      if (navigator.vibrate) navigator.vibrate(20);
+      busy(true, '現在地を取得しています…');
+      const res = await addHitDraft(albumId);
+      busy(false);
+      if (!res || !res.draft) toast('現在地が取れず、下書きを作れませんでした。位置情報の設定を確認してください', 5000);
+      else toast(res.fallback ? '下書きを作りました（現在地が取れなかったため、最後に記録した地点を使いました）' : '下書きを作りました。写真や魚種はあとから入れられます', 4000);
+      draw();
+    });
+    const end = document.getElementById('end-btn');
+    if (end) end.addEventListener('click', async () => {
+      if (!confirm('釣行を終了しますか？')) return;
+      busy(true, '終了しています…');
+      await endTrip(albumId);
+      busy(false);
+      toast('釣行を終了しました');
+      draw();
+      sendTrips(albumId);
+    });
+    const resend = document.getElementById('resend-btn');
+    if (resend) resend.addEventListener('click', () => sendTrips(albumId));
+    $app.querySelectorAll('[data-del-trip]').forEach(b => b.addEventListener('click', async () => {
+      if (!confirm('この釣行を削除しますか？（釣果は消えません。ルートとひも付けが消えます）')) return;
+      busy(true, '削除しています…');
+      try {
+        await api('deleteTrip', { token: session.token, trip_id: b.dataset.delTrip });
+        st.data.trips = st.data.trips.filter(t => t.trip_id !== b.dataset.delTrip);
+        st.data.catches.forEach(c => { if (c.trip_id === b.dataset.delTrip) c.trip_id = ''; });
+        saveStateCache(albumId);
+        toast('削除しました');
+        draw();
+      } catch (err) {
+        toast(err.message, 4000);
+      } finally {
+        busy(false);
+      }
+    }));
+  }
+
+  current.refresh = draw;
+  current.cleanup = () => clearInterval(timer);
+  timer = setInterval(() => { if (activeTrip(albumId)) draw(); }, 60000); // 経過時間を更新
+  draw();
+  refreshAlbum(albumId);
+  sendTrips(albumId, { quiet: true });
+}
+
+// アプリを開いたとき：釣行中なら位置を記録し、終了し忘れを確かめ、送信待ちを送る
+let checkingTrips = false;
+async function checkTrips() {
+  if (checkingTrips) return;
+  checkingTrips = true;
+  try {
+    for (const s of getSessions()) {
+      const state = staleState(s.album_id);
+      if (state === 'auto') {
+        await endTrip(s.album_id, { auto: true });
+        toast(`「${s.album_name || 'アルバム'}」の釣行は、開始から12時間たったので自動で終了しました`, 5000);
+      } else if (state === 'ask') {
+        const t = activeTrip(s.album_id);
+        const since = new Date(lastPointTime(t));
+        if (!confirm(`「${s.album_name || 'アルバム'}」の釣行が続いています（最後の記録 ${since.getHours()}:${pad(since.getMinutes())}）。\n釣行を続けますか？\n（キャンセルすると、最後の記録の時刻で終了します）`)) {
+          await endTrip(s.album_id, { auto: true });
+          toast('釣行を終了しました');
+        } else {
+          await recordOpen(s.album_id);
+        }
+      } else if (activeTrip(s.album_id)) {
+        await recordOpen(s.album_id);
+      }
+      if (outbox(s.album_id).length) await sendTrips(s.album_id, { quiet: true });
+    }
+  } finally {
+    checkingTrips = false;
+    if (current.albumId) notify(current.albumId);
+  }
 }
 
 // ---------- 設定 ----------
@@ -1785,6 +2133,8 @@ function start() {
     history.replaceState(null, '', appBaseUrl() + location.hash);
   }
   render();
+  checkTrips();
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkTrips(); });
 
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(e => console.warn('Service Worker の登録に失敗', e));

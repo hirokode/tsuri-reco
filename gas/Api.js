@@ -6,6 +6,12 @@ const MAX_PHOTOS = 5;        // 1回（釣れた回）あたりの写真の枚�
 const MAX_PHOTOS_TOTAL = 50; // 1件の釣果の写真の合計
 const MAX_HITS = 50; // 1件の釣果に入れられる「釣れた回」の数
 const TIDE_NAMES = ['', '大潮', '中潮', '小潮', '長潮', '若潮'];
+const LOC_SOURCES = ['', 'button', 'estimated', 'manual']; // 位置の出どころ：「釣れた！」／撮影時刻から推定／手動
+const POINT_KINDS = ['start', 'open', 'hit', 'catch', 'end'];
+const MAX_TRIP_POINTS = 500;
+const MAX_TRIP_DRAFTS = 50;
+const TRIP_MAX_MS = 12 * 60 * 60 * 1000; // 終了し忘れた釣行は12時間で打ち切り
+const TRIP_SLACK_MS = 60 * 1000;          // 釣果の時刻は分までなので、開始・終了の前後1分もその釣行とみなす
 
 // ---------- アルバム・メンバー ----------
 
@@ -140,6 +146,9 @@ function apiGetAlbum_(req) {
       return { member_id: m.member_id, display_name: m.display_name, token: m.token };
     }),
     catches: catches.map(publicCatch_),
+    trips: readRows_('trips').filter(function (t) {
+      return t.album_id === album.album_id && t.deleted !== 'true';
+    }).map(publicTrip_),
     server_time: now_()
   };
 }
@@ -153,8 +162,11 @@ function apiSaveCatch_(req) {
     const members = readRows_('members').filter(function (m) { return m.album_id === me.album_id; });
     const fields = cleanCatch_(input, members);
     const now = now_();
+    const has = function (k) { return Object.prototype.hasOwnProperty.call(input, k); };
 
     if (!input.catch_id) {
+      if (!has('loc_source')) fields.loc_source = '';
+      fields.trip_id = fields.trip_id || findTripId_(me.album_id, fields, me.member_id);
       const row = Object.assign({
         catch_id: Utilities.getUuid(),
         album_id: me.album_id,
@@ -171,6 +183,8 @@ function apiSaveCatch_(req) {
 
     const row = catchRow_(input.catch_id, me.album_id);
     checkConflict_(row, req);
+    if (!has('loc_source')) delete fields.loc_source; // 古い画面は送らないので、今の値を残す
+    fields.trip_id = fields.trip_id || findTripId_(me.album_id, fields, row.created_by);
     Object.assign(row, fields, { updated_by: me.member_id, updated_at: now });
     updateRow_('catches', row._row, row);
     return { catch: publicCatch_(row) };
@@ -206,6 +220,7 @@ function catchRow_(catchId, albumId) {
 
 // 画面から来た値を確認・整形する。ここを通った値だけをシートに書く
 function cleanCatch_(c, members) {
+  const draft = c.draft === true;
   let caughtAt = text_(c.caught_at, 40, '日時', true);
   if (isNaN(Date.parse(caughtAt))) throw apiError_('invalid', '日時の形式が正しくありません');
   const lat = num_(c.lat, -90, 90, '緯度', true);
@@ -238,7 +253,7 @@ function cleanCatch_(c, members) {
     lat: lat,
     lng: lng,
     place_name: text_(c.place_name, 100, '場所名', false),
-    species: text_(c.species, 50, '魚種', true),
+    species: text_(c.species, 50, '魚種', !draft),
     size_cm: num_(c.size_cm, 0, 1000, 'サイズ', false),
     weight_g: num_(c.weight_g, 0, 1000000, '重さ', false),
     count: count,
@@ -248,7 +263,10 @@ function cleanCatch_(c, members) {
     bait: text_(c.bait, 100, 'エサ／ルアー', false),
     memo: text_(c.memo, 2000, 'メモ', false),
     photo_ids: JSON.stringify(cleanPhotos),
-    hits: hits.length > 1 ? JSON.stringify(hits) : ''
+    hits: hits.length > 1 ? JSON.stringify(hits) : '',
+    trip_id: c.trip_id ? validId_(c.trip_id, '釣行') : '',
+    loc_source: cleanLocSource_(c.loc_source),
+    draft: draft ? 'true' : 'false'
   };
   // 回ごとに魚種などが入っていれば、釣果全体の値は回からまとめたものにする（画面の summarizeHits と同じ決め方）
   return summary ? Object.assign(fields, summary) : fields;
@@ -274,6 +292,12 @@ function hitSummary_(hits) {
     bait: first.bait,
     memo: first.memo
   };
+}
+
+function cleanLocSource_(v) {
+  const s = v === undefined || v === null ? '' : String(v);
+  if (LOC_SOURCES.indexOf(s) < 0) throw apiError_('invalid', '位置の出どころの値が正しくありません');
+  return s;
 }
 
 function cleanPhotoList_(list) {
@@ -318,6 +342,146 @@ function cleanHits_(list, members) {
   return hits;
 }
 
+// ---------- 釣行 ----------
+// 釣行の記録は端末にため、終了時にまとめて送られてくる。trip_id・下書きの catch_id は端末で作るので、
+// 同じ釣行を2回送っても重複しない（上書き・既にある下書きは作らない）。
+
+function apiSaveTrip_(req) {
+  const t = req.trip || {};
+  const tripId = validId_(t.trip_id, '釣行');
+  const startedAt = dateText_(t.started_at, '開始時刻');
+  const endedAt = dateText_(t.ended_at, '終了時刻');
+  if (Date.parse(endedAt) < Date.parse(startedAt)) throw apiError_('invalid', '終了時刻が開始時刻より前です');
+  const points = cleanPoints_(t.points);
+  const drafts = Array.isArray(req.drafts) ? req.drafts : [];
+  if (drafts.length > MAX_TRIP_DRAFTS) throw apiError_('invalid', '下書きは' + MAX_TRIP_DRAFTS + '件までです');
+
+  return withLock_(function () {
+    const me = auth_(req.token);
+    const now = now_();
+    const start = points.filter(function (p) { return p.kind === 'start'; })[0];
+    const end = points.filter(function (p) { return p.kind === 'end'; }).pop();
+    const fields = {
+      trip_id: tripId,
+      album_id: me.album_id,
+      member_id: me.member_id,
+      started_at: startedAt,
+      ended_at: endedAt,
+      start_lat: start ? start.lat : '',
+      start_lng: start ? start.lng : '',
+      end_lat: end ? end.lat : '',
+      end_lng: end ? end.lng : '',
+      points: JSON.stringify(points),
+      auto_ended: t.auto_ended === true ? 'true' : 'false',
+      updated_at: now,
+      deleted: 'false'
+    };
+    const existing = readRows_('trips').filter(function (x) { return x.trip_id === tripId; })[0];
+    let row;
+    if (existing) {
+      if (existing.album_id !== me.album_id || existing.member_id !== me.member_id) throw apiError_('forbidden', 'この釣行は変更できません');
+      row = Object.assign(existing, fields);
+      updateRow_('trips', row._row, row);
+    } else {
+      row = Object.assign({ created_at: now }, fields);
+      appendRow_('trips', row);
+    }
+
+    // 「釣れた！」の下書き（時刻と位置だけ）
+    const catches = readRows_('catches');
+    drafts.forEach(function (d) {
+      const id = validId_(d.draft_id, '下書き');
+      if (catches.some(function (c) { return c.catch_id === id; })) return;
+      const at = dateText_(d.caught_at, '下書きの時刻');
+      const draft = {
+        catch_id: id, album_id: me.album_id, caught_at: at,
+        lat: num_(d.lat, -90, 90, '緯度', true), lng: num_(d.lng, -180, 180, '経度', true),
+        place_name: '', species: '', size_cm: '', weight_g: '', count: 1, angler_member_id: me.member_id,
+        tide_name: '', tide_events: '', method: '', bait: '', memo: '', photo_ids: '[]', hits: '',
+        trip_id: tripId, loc_source: 'button', draft: 'true',
+        created_by: me.member_id, created_at: now, updated_by: me.member_id, updated_at: now, deleted: 'false'
+      };
+      appendRow_('catches', draft);
+      catches.push(draft);
+    });
+
+    // 釣行中の時刻の釣果（自分が釣った・登録した、まだどの釣行にもひも付いていないもの）をひも付ける
+    catches.forEach(function (c) {
+      if (!c._row || c.album_id !== me.album_id || c.deleted === 'true' || c.trip_id) return;
+      if (c.angler_member_id !== me.member_id && c.created_by !== me.member_id) return;
+      const at = Date.parse(c.caught_at);
+      if (at >= Date.parse(startedAt) - TRIP_SLACK_MS && at <= Date.parse(endedAt) + TRIP_SLACK_MS) {
+        c.trip_id = tripId;
+        updateRow_('catches', c._row, c);
+      }
+    });
+    return { trip: publicTrip_(row) };
+  });
+}
+
+function apiDeleteTrip_(req) {
+  const tripId = validId_(req.trip_id, '釣行');
+  return withLock_(function () {
+    const me = auth_(req.token);
+    const row = readRows_('trips').filter(function (x) {
+      return x.trip_id === tripId && x.album_id === me.album_id && x.deleted !== 'true';
+    })[0];
+    if (!row) throw apiError_('not_found', 'この釣行は見つかりません');
+    if (row.member_id !== me.member_id) throw apiError_('forbidden', '自分の釣行だけ削除できます');
+    Object.assign(row, { deleted: 'true', updated_at: now_() });
+    updateRow_('trips', row._row, row);
+    readRows_('catches').forEach(function (c) {
+      if (c.trip_id === tripId && c.album_id === me.album_id) {
+        c.trip_id = '';
+        updateRow_('catches', c._row, c);
+      }
+    });
+    return { trip_id: tripId };
+  });
+}
+
+// 釣った時刻が入る釣行（釣った人か登録した人の釣行）。無ければ空
+function findTripId_(albumId, fields, creatorId) {
+  const at = Date.parse(fields.caught_at);
+  const trip = readRows_('trips').filter(function (t) {
+    if (t.album_id !== albumId || t.deleted === 'true') return false;
+    if (t.member_id !== fields.angler_member_id && t.member_id !== creatorId) return false;
+    const end = t.ended_at ? Date.parse(t.ended_at) : Date.parse(t.started_at) + TRIP_MAX_MS;
+    return at >= Date.parse(t.started_at) - TRIP_SLACK_MS && at <= end + TRIP_SLACK_MS;
+  })[0];
+  return trip ? trip.trip_id : '';
+}
+
+function cleanPoints_(list) {
+  if (!Array.isArray(list)) return [];
+  if (list.length > MAX_TRIP_POINTS) throw apiError_('invalid', '記録地点は' + MAX_TRIP_POINTS + 'か所までです');
+  return list.map(function (p) {
+    const kind = text_(p && p.kind, 10, '記録の種類', true);
+    if (POINT_KINDS.indexOf(kind) < 0) throw apiError_('invalid', '記録の種類が正しくありません');
+    return {
+      t: dateText_(p.t, '記録時刻'),
+      lat: num_(p.lat, -90, 90, '緯度', true),
+      lng: num_(p.lng, -180, 180, '経度', true),
+      acc: num_(p.acc, 0, 100000, '精度', false),
+      kind: kind
+    };
+  });
+}
+
+function publicTrip_(t) {
+  const n = function (v) { return v === '' ? null : Number(v); };
+  return {
+    trip_id: t.trip_id,
+    member_id: t.member_id,
+    started_at: t.started_at,
+    ended_at: t.ended_at,
+    start_lat: n(t.start_lat), start_lng: n(t.start_lng),
+    end_lat: n(t.end_lat), end_lng: n(t.end_lng),
+    points: parseJson_(t.points, []),
+    auto_ended: t.auto_ended === 'true'
+  };
+}
+
 // ---------- 共通 ----------
 
 function auth_(token) {
@@ -360,6 +524,9 @@ function publicCatch_(c) {
     memo: c.memo,
     photo_ids: parseJson_(c.photo_ids, []),
     hits: parseJson_(c.hits, null),
+    trip_id: c.trip_id || '',
+    loc_source: c.loc_source || '',
+    draft: c.draft === 'true',
     created_by: c.created_by,
     created_at: c.created_at,
     updated_by: c.updated_by,
@@ -391,6 +558,19 @@ function parseJson_(s, fallback) {
 
 function validToken_(t) {
   return typeof t === 'string' && /^[a-f0-9]{64}$/.test(t);
+}
+
+// 端末や GAS で作った UUID
+function validId_(v, label) {
+  const s = String(v || '').toLowerCase();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(s)) throw apiError_('invalid', label + 'のIDが正しくありません');
+  return s;
+}
+
+function dateText_(v, label) {
+  const s = text_(v, 40, label, true);
+  if (isNaN(Date.parse(s))) throw apiError_('invalid', label + 'の形式が正しくありません');
+  return s;
 }
 
 function validFileId_(id) {
