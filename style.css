@@ -456,3 +456,49 @@ input[type="datetime-local"]:disabled { background: #f1f4f6; color: var(--text);
 }
 .trip-actions { margin-bottom: 8px; }
 .trip-privacy { margin: -4px 4px 8px; }
+
+/* ---------- 登録画面：時刻の「写真から入力」トグル・潮位の欄 ---------- */
+.hit-time { align-items: start; }
+.time-field { min-width: 0; }
+.time-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 4px; }
+.field-label { font-size: 14px; font-weight: 600; color: var(--muted); }
+.form .switch { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: 12px; font-weight: 600; color: var(--sea-dark); cursor: pointer; white-space: nowrap; }
+.switch input { position: absolute; opacity: 0; width: 1px; height: 1px; min-height: 0; margin: 0; pointer-events: none; }
+.switch-track { position: relative; width: 36px; height: 22px; border-radius: 999px; background: #cfdbe1; transition: background .2s; flex: none; }
+.switch-track::after { content: ''; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: transform .2s; }
+.switch input:checked + .switch-track { background: var(--sea); }
+.switch input:checked + .switch-track::after { transform: translateX(14px); }
+.switch input:focus-visible + .switch-track { outline: 2px solid var(--sea); outline-offset: 2px; }
+.time-note { font-size: 12px; color: var(--muted); margin: 4px 2px 12px; }
+.hit-time > label { margin-top: 26px; }
+.tide-row { align-items: start; }
+.tide-level-field .field-label { display: block; margin-bottom: 4px; }
+.readout {
+  min-height: 44px; padding: 8px 12px; border-radius: 12px; background: var(--sea-light);
+  display: flex; flex-direction: column; justify-content: center; line-height: 1.3; font-size: 15px; color: var(--sea-deep);
+}
+.readout .small { font-size: 11px; }
+
+/* ---------- 詳細：潮位グラフ ---------- */
+.tg-legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin: -2px 0 6px; }
+.tg-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.lg-line { display: inline-block; width: 16px; height: 2px; border-radius: 2px; background: var(--sea); }
+.lg-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #f0603a; box-shadow: 0 0 0 2px #fff, 0 0 0 3px #f3c7b9; }
+.tg-wrap { position: relative; margin: 0 -6px 6px; }
+.tide-chart { display: block; width: 100%; height: auto; touch-action: pan-y; font-family: inherit; }
+.tc-grid line { stroke: #e6edf0; stroke-width: 1; }
+.tc-yl text, .tc-unit { font-size: 10px; fill: var(--muted); text-anchor: end; }
+.tc-xl line { stroke: #c9d6dc; stroke-width: 1; }
+.tc-xl text { font-size: 10px; fill: var(--muted); text-anchor: middle; }
+.tc-area { fill: var(--sea); fill-opacity: .1; stroke: none; }
+.tc-line { fill: none; stroke: var(--sea); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.tc-ev text { font-size: 9.5px; fill: var(--muted); text-anchor: middle; font-weight: 600; }
+.tc-marks circle { fill: #f0603a; stroke: #fff; stroke-width: 2; }
+.tc-marks text { font-size: 10px; font-weight: 700; fill: var(--text); text-anchor: middle; }
+.tc-cross line { stroke: #8fa6b2; stroke-width: 1; }
+.tc-cross circle { fill: #fff; stroke: var(--sea-dark); stroke-width: 2; }
+.tc-hit { fill: transparent; cursor: crosshair; }
+.tg-tip {
+  position: absolute; top: -6px; transform: translateX(-50%); pointer-events: none; white-space: nowrap;
+  background: rgba(16, 36, 48, .9); color: #fff; font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 8px;
+}

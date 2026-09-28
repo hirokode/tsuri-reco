@@ -79,7 +79,7 @@
 | 項目 | 必須 | 入力補助 |
 |---|---|---|
 | 写真（複数可） | 任意 | カメラ撮影 or 写真選択。写真はカードに添付する。**EXIFから撮影日時だけ自動入力**（写真の位置情報は使わない） |
-| 日時 | 必須 | 「写真から」（既定・変更不可）＝写真のEXIF撮影日時→なければ現在時刻（編集時は保存済みの日時）／「自分で入力」に切り替えると自由に変更できる |
+| 日時 | 必須 | 各回のカードの時刻欄に「写真から入力」のトグル（既定オン）。オンでその回の写真に撮影日時があれば、その時刻を入れて変更不可。オフにすると自由に入力できる |
 | 位置（緯度経度） | 必須 | 「現在地を取得」／地図で指定（地図画面の長押し・登録画面の地図でピンを動かす）／**緯度経度を直接入力**（Googleマップからコピーした「35.1, 138.8」形式の貼り付けにも対応）。写真のEXIF位置情報からの自動入力はしない |
 | 場所名 | 任意 | 過去に使った場所名から候補表示（近い座標の既存名を提案） |
 | 魚種 | 必須 | 過去の入力から候補表示＋自由入力 |
@@ -87,7 +87,7 @@
 | 重さ（g） | 任意 | |
 | 匹数 | 必須 | 「釣れた回」ごとに時刻と匹数を入れる（例：1回目 9:40 2匹、2回目 10:30 1匹）。回は時刻順に自動で並べ替え、日時＝最初の回、匹数＝合計。初期値は1回・1匹。写真は回ごとに5枚まで付けられ、「写真から」のときはその回の時刻に撮影日時を入れる |
 | 釣った人 | 必須 | アルバムメンバーから選択、初期値＝自分 |
-| 潮 | 自動 | 潮名（大潮／中潮等）は日付の月齢から計算して自動入力（新規登録のみ。手動修正可・渓流などは未選択に）。潮を選んだ釣果は、いちばん近い気象庁の潮位表掲載地点の予測（その時刻の潮位・上げ下げ・満干潮時刻）を登録画面と詳細画面に表示（保存はしない） |
+| 潮 | 自動 | 潮名（大潮／中潮等）は各回の日付の月齢から自動で入れる（時刻を変えると入れ直す。潮に関係ない釣りは後から「未選択」を選ぶ。編集では時刻を変えるまで保存済みの潮を残す）。横に「潮位（予測）」の欄をいつも出す（いちばん近い気象庁の潮位表掲載地点の、その時刻の潮位・上げ下げ。時刻・位置・潮がそろわないときは「ー」）。保存はしない |
 | 釣り方・仕掛け | 任意 | 過去入力から候補 |
 | エサ／ルアー | 任意 | 過去入力から候補 |
 | メモ | 任意 | |
@@ -117,6 +117,7 @@
 
 ### 4.4 詳細
 - 写真スワイプ、全項目表示、小さい地図、編集・削除ボタン
+- **潮位グラフ**：潮を選んでいる釣果は、潮位（予測）の線グラフに釣れた時刻を印で示す。範囲は、釣行にひも付いていれば開始〜終了、無ければ写真の撮影時刻の最初〜最後（1枚なら前後6時間）、撮影時刻も無ければ釣れた回の最初〜最後（1回なら前後6時間）。釣れた回がすべて入るように広げ、2時間より短いときは2時間にする。なぞるとその時刻の潮位を出す。出典（気象庁）を書く
 
 ### 4.5 設定
 - アルバム名・アイコン画像の編集（ホームの ✎ と同じ画面）、表示名変更、自分の招待リンク表示、地図の初期レイヤー
@@ -125,7 +126,7 @@
 **albums**：album_id, name, created_at, drive_folder_id, icon_photo(JSON: アイコン画像 {f,t})
 **members**：member_id, album_id, display_name, token, joined_at
 **trips**：trip_id, album_id, member_id, started_at, ended_at, start_lat, start_lng, end_lat, end_lng, points(JSON: 記録地点 [{t, lat, lng, acc, kind}]。kind＝start／open／hit／catch／end), auto_ended(bool), created_at, updated_at, deleted(bool)
-**catches**：catch_id, album_id, caught_at, lat, lng, place_name, species, size_cm, weight_g, count, angler_member_id, tide_name, tide_events(JSON: 満干潮時刻), method, bait, memo, photo_ids(JSON), created_by, created_at, updated_by, updated_at, deleted(bool), hits(JSON: 釣れた回 [{at, count, photos, species, size_cm, weight_g, angler_member_id, tide_name, method, bait, memo}]。2回以上のときだけ), trip_id(ひも付いた釣行), loc_source(位置の出どころ：button／estimated／manual), draft(bool: 「釣れた！」の下書き。魚種などが空でもよい)
+**catches**：catch_id, album_id, caught_at, lat, lng, place_name, species, size_cm, weight_g, count, angler_member_id, tide_name, tide_events(JSON: 満干潮時刻), method, bait, memo, photo_ids(JSON: [{f, t, at}]。at＝撮影時刻（あれば。潮位グラフの範囲に使う）), created_by, created_at, updated_by, updated_at, deleted(bool), hits(JSON: 釣れた回 [{at, count, photos, species, size_cm, weight_g, angler_member_id, tide_name, method, bait, memo}]。2回以上のときだけ), trip_id(ひも付いた釣行), loc_source(位置の出どころ：button／estimated／manual), draft(bool: 「釣れた！」の下書き。魚種などが空でもよい)
 
 - 削除は論理削除（deleted=true）
 - ID はUUID

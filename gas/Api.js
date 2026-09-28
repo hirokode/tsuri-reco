@@ -300,10 +300,13 @@ function cleanLocSource_(v) {
   return s;
 }
 
+// 写真：Drive のファイルID（原寸 f・サムネ t）と、撮影時刻 at（任意。潮位グラフの範囲に使う。位置は持たない）
 function cleanPhotoList_(list) {
   return list.map(function (p) {
     if (!p || !validFileId_(p.f) || !validFileId_(p.t)) throw apiError_('invalid', '写真の情報が正しくありません');
-    return { f: p.f, t: p.t };
+    const photo = { f: p.f, t: p.t };
+    if (p.at) photo.at = dateText_(p.at, '撮影時刻');
+    return photo;
   });
 }
 
