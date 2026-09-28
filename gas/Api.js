@@ -12,6 +12,7 @@ const MAX_TRIP_POINTS = 500;
 const MAX_TRIP_DRAFTS = 50;
 const TRIP_MAX_MS = 12 * 60 * 60 * 1000; // 終了し忘れた釣行は12時間で打ち切り
 const TRIP_SLACK_MS = 60 * 1000;          // 釣果の時刻は分までなので、開始・終了の前後1分もその釣行とみなす
+const MAX_MEMBERS = 20;       // 1つのアルバムのメンバー（招待中を含む）の上限
 
 // ---------- アルバム・メンバー ----------
 
@@ -66,6 +67,24 @@ function apiJoin_(req) {
     updateRow_('members', me._row, me);
     const album = albumRow_(me.album_id);
     return { album_id: album.album_id, album_name: album.name, me: publicMember_(me) };
+  });
+}
+
+// 友達を追加で招待する：新しいメンバー（未参加）とその招待リンク用のトークンを作る。
+// 参加済みのメンバーだけができる。作れるのは自分のアルバムのメンバーだけ
+function apiCreateInvite_(req) {
+  const name = text_(req.display_name, 30, '友達の名前', false);
+  return withLock_(function () {
+    const me = auth_(req.token);
+    if (!me.joined_at) throw apiError_('forbidden', 'アルバムに参加してから招待してください');
+    const count = readRows_('members').filter(function (m) { return m.album_id === me.album_id; }).length;
+    if (count >= MAX_MEMBERS) throw apiError_('invalid', 'このアルバムにはこれ以上招待できません（' + MAX_MEMBERS + '人まで）');
+    const friend = { member_id: Utilities.getUuid(), album_id: me.album_id, display_name: name, token: newToken_(), joined_at: '' };
+    appendRow_('members', friend);
+    return {
+      invite: { member_id: friend.member_id, token: friend.token, display_name: name },
+      member: publicMember_(friend)
+    };
   });
 }
 

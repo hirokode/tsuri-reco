@@ -23,6 +23,10 @@
 
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
+/* 引っぱったときに画面全体（上のバーごと）が上下に揺れないように */
+html, body { overscroll-behavior-y: none; }
+/* 釣行・地図は画面いっぱいの固定レイアウト。ページ自体はスクロールさせない */
+body:has(.trip-page), body:has(.map-page) { position: fixed; inset: 0; overflow: hidden; }
 body {
   margin: 0;
   min-height: 100vh;
@@ -68,6 +72,16 @@ p { margin: 0 0 8px; }
 }
 .icon-btn:active { background: rgba(255,255,255,.15); }
 .icon-spacer { width: 44px; }
+/* アルバムの中の画面：左に「アルバム」（一覧へ戻る）、右に設定。タイトルが真ん中に来るよう左右を同じ幅に */
+.topbar-side { flex: 0 0 108px; display: flex; align-items: center; }
+.topbar-side.right { justify-content: flex-end; }
+.back-pill {
+  display: inline-flex; align-items: center; gap: 2px; height: 34px; padding: 0 12px 0 6px;
+  border: 0; border-radius: 999px; background: rgba(255, 255, 255, .16); color: #fff;
+  font: inherit; font-size: 14px; font-weight: 700; cursor: pointer; white-space: nowrap;
+}
+.back-pill:active { background: rgba(255, 255, 255, .26); }
+.back-pill .icon { width: 18px; height: 18px; }
 
 /* ---------- ページ ---------- */
 .page { padding: 14px 16px calc(24px + var(--safe-bottom)); max-width: 640px; margin: 0 auto; }
@@ -358,6 +372,8 @@ input[type="datetime-local"]:disabled { background: #f1f4f6; color: var(--text);
   position: absolute; left: 10px; right: 10px; bottom: 10px; z-index: 900; max-height: 45%; overflow-y: auto;
   background: #fff; border-radius: var(--radius); box-shadow: 0 4px 16px rgba(0,0,0,.2); padding: 8px 14px 12px;
 }
+.member-names { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 14px; }
+.member-names .chip { margin: 0; font-size: 13px; padding: 4px 10px; }
 .route-head { display: flex; align-items: center; justify-content: space-between; }
 body:has(.route-panel:not([hidden])) .fab { display: none; } /* 一覧の × に重ならないように */
 .route-head .icon-btn { color: var(--muted); }
@@ -379,118 +395,54 @@ body:has(.route-panel:not([hidden])) .fab { display: none; } /* 一覧の × に
 .loc-src-line { font-size: 13px; color: var(--sea-dark); font-weight: 600; margin: -4px 0 8px; }
 .loc-src-line:empty { display: none; }
 
-/* ---------- 釣行 ---------- */
-.trip-state { font-weight: 700; margin-bottom: 2px; display: inline-flex; align-items: center; gap: 6px; background: rgba(255,255,255,.22); padding: 2px 12px; border-radius: 999px; }
-.rec-dot { width: 9px; height: 9px; border-radius: 50%; background: #ff5a3c; box-shadow: 0 0 0 3px rgba(255,255,255,.7); animation: rec 1.4s ease-in-out infinite; }
-@keyframes rec { 50% { opacity: .3; } }
-.trip-time { margin: 6px 0 0; }
-.trip-time b { display: block; font-size: 34px; line-height: 1.1; letter-spacing: .02em; }
-.trip-time span { font-size: 13px; opacity: .9; }
-
-/* ---------- 釣行：海のヒーローと、押したくなる球のボタン ---------- */
-.trip-hero {
-  position: relative; overflow: hidden; text-align: center; color: #fff;
-  margin: 2px 0 14px; padding: 22px 16px 70px; border-radius: 28px;
-  background:
-    radial-gradient(140% 70% at 50% -10%, rgba(255, 255, 255, .55) 0%, rgba(255, 255, 255, 0) 55%),
-    linear-gradient(180deg, #8edcf0 0%, #3eb2d6 48%, #1386b3 78%, #0b6b94 100%);
-  box-shadow: 0 14px 30px -12px rgba(8, 80, 120, .55);
-}
-.trip-hero.live {
-  background:
-    radial-gradient(140% 70% at 50% -10%, rgba(255, 236, 214, .7) 0%, rgba(255, 236, 214, 0) 55%),
-    linear-gradient(180deg, #ffd3b8 0%, #7fcfe6 42%, #1f93bd 78%, #0b6b94 100%);
-}
-/* 下で揺れる2重の波 */
-.trip-hero::before, .trip-hero::after {
-  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 60px; pointer-events: none;
-  background-repeat: repeat-x; background-size: 360px 60px;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 360 60'%3E%3Cpath d='M0 30 C 45 10 90 10 135 30 S 225 50 270 30 S 330 12 360 30 V60 H0Z' fill='%23ffffff'/%3E%3C/svg%3E");
-}
-.trip-hero::before { opacity: .18; bottom: 10px; animation: wave 14s linear infinite reverse; }
-.trip-hero::after { opacity: .32; animation: wave 9s linear infinite; }
-@keyframes wave { from { background-position-x: 0; } to { background-position-x: 360px; } }
-.hero-greet { font-size: 17px; font-weight: 700; letter-spacing: .04em; text-shadow: 0 1px 6px rgba(0, 60, 90, .25); margin: 0; }
-.hero-note { position: relative; z-index: 1; font-size: 13px; margin: 10px 0 0; text-shadow: 0 1px 4px rgba(0, 50, 80, .35); }
-
-.orb {
-  position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
-  width: 188px; height: 188px; margin: 20px auto 6px; padding: 0; border: 0; border-radius: 50%; cursor: pointer;
-  color: #fff; font: inherit; font-size: 22px; font-weight: 800; line-height: 1.25; letter-spacing: .06em;
-  text-shadow: 0 1px 3px rgba(0, 40, 70, .35);
-  /* ツヤ（左上のハイライト）＋ 球の色 */
-  background:
-    radial-gradient(circle at 32% 24%, rgba(255, 255, 255, .95) 0 6%, rgba(255, 255, 255, .35) 12%, rgba(255, 255, 255, 0) 26%),
-    radial-gradient(circle at 50% 60%, #5fe0f5 0%, #1eaad6 40%, #0a7ea4 72%, #075a78 100%);
-  box-shadow:
-    0 24px 34px -14px rgba(4, 60, 95, .7),
-    inset 0 -16px 28px rgba(3, 45, 75, .45),
-    inset 0 8px 18px rgba(255, 255, 255, .35);
-  animation: orb-float 3.6s ease-in-out infinite;
-  transition: transform .12s;
-}
-.orb.coral {
-  background:
-    radial-gradient(circle at 32% 24%, rgba(255, 255, 255, .95) 0 6%, rgba(255, 255, 255, .35) 12%, rgba(255, 255, 255, 0) 26%),
-    radial-gradient(circle at 50% 60%, #ffc0a0 0%, #ff8a5c 40%, #f0603a 72%, #c2432a 100%);
-  box-shadow:
-    0 24px 34px -14px rgba(150, 50, 20, .6),
-    inset 0 -16px 28px rgba(140, 40, 15, .4),
-    inset 0 8px 18px rgba(255, 255, 255, .35);
-}
-.orb-icon { font-size: 30px; line-height: 1; margin-bottom: 4px; filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .2)); }
-/* まわりに広がる波紋（押したくなるように） */
-.orb::before, .orb::after {
-  content: ''; position: absolute; inset: -2px; border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, .7); animation: orb-ring 2.8s ease-out infinite; pointer-events: none;
-}
-.orb::after { animation-delay: 1.4s; }
-.orb:active { transform: scale(.94); animation-play-state: paused; }
-@keyframes orb-float { 0%, 100% { translate: 0 0; } 50% { translate: 0 -6px; } }
-@keyframes orb-ring { from { transform: scale(1); opacity: .9; } to { transform: scale(1.35); opacity: 0; } }
-@media (prefers-reduced-motion: reduce) {
-  .orb, .orb::before, .orb::after, .trip-hero::before, .trip-hero::after { animation: none; }
-}
-/* 釣行タブは画面いっぱいの海（地図と同じく上下のバーの間を埋める） */
+/* ---------- 釣行（上下のバーの間いっぱい。Nike Run Club のように、落ち着いた背景に大きな数字と丸いボタン） ---------- */
 .trip-page {
   position: fixed; left: 0; right: 0;
   top: calc(var(--topbar-h) + var(--safe-top));
   bottom: calc(var(--tabbar-h) + var(--safe-bottom));
-  display: flex; flex-direction: column; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  display: flex; flex-direction: column; overflow-y: auto; overscroll-behavior: contain;
+  background: linear-gradient(180deg, #0b4f6e 0%, #083d56 100%);
 }
 .trip-notes { padding: 12px 16px 0; }
-body:has(.trip-page) #toast { bottom: calc(var(--tabbar-h) + 110px + var(--safe-bottom)); }
 .trip-notes .notice { margin-bottom: 12px; }
-/* 画面いっぱいのときは、白い文字が読めるよう空の色を少し濃くする */
-.trip-page .trip-hero {
-  background:
-    radial-gradient(120% 50% at 50% -10%, rgba(255, 255, 255, .35) 0%, rgba(255, 255, 255, 0) 60%),
-    linear-gradient(180deg, #4dbfe3 0%, #2ea6d2 40%, #1386b3 75%, #0b6b94 100%);
+/* 釣行画面では、下の丸いボタンに重ならないよう上のバーのすぐ下に出す */
+body:has(.trip-page) #toast { top: calc(var(--topbar-h) + var(--safe-top) + 12px); bottom: auto; }
+.trip-hero {
+  flex: 1 0 auto; min-height: 430px; color: #fff; text-align: center;
+  display: flex; flex-direction: column; justify-content: space-between; gap: 16px;
+  padding: 28px 20px 26px;
 }
-.trip-page .trip-hero.live {
-  background:
-    radial-gradient(120% 50% at 50% -10%, rgba(255, 220, 190, .45) 0%, rgba(255, 220, 190, 0) 60%),
-    linear-gradient(180deg, #e9825e 0%, #ee9a76 22%, #f3c4a6 33%, #a6d9ea 45%, #4fb4d8 58%, #1f93bd 80%, #0b6b94 100%);
+.hero-top, .hero-bottom { width: 100%; max-width: 420px; margin: 0 auto; }
+.big-label { margin: 0; font-size: 13px; font-weight: 700; letter-spacing: .12em; color: rgba(255, 255, 255, .6); }
+.hero-greet { margin: 6px 0 0; font-size: 26px; font-weight: 800; letter-spacing: .02em; }
+.trip-state { display: inline-flex; align-items: center; gap: 6px; margin: 0 0 10px; font-size: 13px; font-weight: 700; color: rgba(255, 255, 255, .85); }
+.rec-dot { width: 8px; height: 8px; border-radius: 50%; background: #ff7a52; animation: rec 1.4s ease-in-out infinite; }
+@keyframes rec { 50% { opacity: .3; } }
+.big-time { margin: 0; font-size: 76px; font-weight: 800; line-height: 1; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.big-time + .big-label { margin-top: 6px; }
+.trip-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 26px; padding-top: 18px; border-top: 1px solid rgba(255, 255, 255, .14); }
+.trip-stats b { display: block; font-size: 24px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.trip-stats span { font-size: 12px; color: rgba(255, 255, 255, .6); }
+.hero-top .trip-stats.summary { margin-top: 34px; }
+.trip-stats small { font-size: 13px; font-weight: 700; margin-left: 2px; }
+/* 丸いボタン：開始・釣れた！（大）と、登録・終了（小） */
+.go-btn {
+  width: 132px; height: 132px; border-radius: 50%; border: 0; margin: 0 auto; display: grid; place-items: center;
+  background: #5fd4ec; color: #06374d; font: inherit; font-size: 22px; font-weight: 800; letter-spacing: .04em; cursor: pointer;
+  box-shadow: 0 10px 24px -8px rgba(0, 0, 0, .45); transition: transform .12s;
 }
-.trip-page .trip-hero {
-  flex: 1 0 auto; min-height: 440px; margin: 0; border-radius: 0; box-shadow: none;
-  display: flex; flex-direction: column; justify-content: space-between; gap: 12px;
-  padding: 26px 20px 30px;
+.go-btn.coral { background: #ff7a52; color: #fff; }
+.go-btn:active { transform: scale(.94); }
+.trip-controls { display: flex; align-items: center; justify-content: center; gap: 26px; }
+.round-btn {
+  width: 64px; height: 64px; border-radius: 50%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+  border: 0; background: rgba(255, 255, 255, .14); color: #fff; font: inherit; font-size: 11px; font-weight: 700; text-decoration: none; cursor: pointer;
 }
-.hero-mid { position: relative; z-index: 1; }
-.trip-page .hero-top { text-shadow: 0 1px 6px rgba(120, 40, 10, .3); }
-.hero-actions { position: relative; z-index: 1; display: flex; gap: 10px; max-width: 420px; width: 100%; margin: 0 auto; }
-.btn.glass {
-  flex: 1; min-height: 50px; color: #fff; font-weight: 700;
-  background: rgba(255, 255, 255, .2); border: 1px solid rgba(255, 255, 255, .55);
-  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
-  text-shadow: 0 1px 3px rgba(0, 40, 70, .3);
-}
-.btn.glass .icon { width: 18px; height: 18px; }
-.hero-privacy {
-  position: relative; z-index: 1; max-width: 420px; margin: 0 auto;
-  font-size: 11px; line-height: 1.5; opacity: .92; text-shadow: 0 1px 3px rgba(0, 50, 80, .4);
-}
+.round-btn:active { background: rgba(255, 255, 255, .24); }
+.round-btn .icon { width: 22px; height: 22px; }
+.hero-note { margin: 16px 0 0; font-size: 13px; color: rgba(255, 255, 255, .75); }
+.hero-privacy { margin: 10px 0 0; font-size: 11px; line-height: 1.5; color: rgba(255, 255, 255, .5); }
+
 
 /* ---------- 登録画面：時刻の「写真から入力」トグル・潮位の欄 ---------- */
 .hit-time { align-items: start; }
