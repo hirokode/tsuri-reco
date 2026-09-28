@@ -489,3 +489,41 @@ body:has(.trip-page) #toast { top: calc(var(--topbar-h) + var(--safe-top) + 12px
   position: absolute; top: -6px; transform: translateX(-50%); pointer-events: none; white-space: nowrap;
   background: rgba(16, 36, 48, .9); color: #fff; font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 8px;
 }
+
+/* ---------- 月間潮表 ---------- */
+.tm-head select { margin-bottom: 4px; }
+.tm-pats { list-style: none; margin: 4px 0 8px; padding: 0; font-size: 14px; }
+.tm-pats li { padding: 4px 0; border-top: 1px solid var(--line); }
+.tm-pats li:first-child { border-top: 0; }
+.tm-month { display: flex; align-items: center; justify-content: center; gap: 18px; margin: 4px 0 6px; }
+.tm-month b { font-size: 18px; min-width: 120px; text-align: center; }
+.tm-month .icon-btn { color: var(--sea-dark); background: var(--card); box-shadow: var(--shadow); }
+.tm-month .icon-btn.flip .icon { transform: scaleX(-1); }
+.tm-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; font-size: 12px; color: var(--muted); margin: 0 2px 10px; }
+.tm-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.tm-legend .switch { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; font-weight: 600; color: var(--sea-dark); cursor: pointer; }
+.lg-band { display: inline-block; width: 16px; height: 12px; border-radius: 3px; background: #f0603a; }
+.lg-band.g2 { opacity: .42; }
+.lg-band.g1 { opacity: .2; }
+.tm-count { margin: 0 2px 8px; }
+.tm-day { padding: 12px 14px 10px; margin-bottom: 10px; }
+.tm-day.like { box-shadow: inset 0 0 0 2px rgba(240, 96, 58, .35), var(--shadow); }
+.tm-day-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.tm-day-head .chip { margin-left: 0; }
+.tm-day-head .sun { color: #d0453a; }
+.tm-day-head .sat { color: var(--sea); }
+.tm-ev { margin-left: auto; font-variant-numeric: tabular-nums; }
+.tm-svg { display: block; width: 100%; height: auto; margin-top: 6px; touch-action: pan-y; }
+.tm-band { fill: #f0603a; }
+.tm-band.g2 { opacity: .42; }
+.tm-band.g1 { opacity: .2; }
+.like-badge { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; font-size: 13px; font-weight: 800; color: #fff; background: #f0603a; }
+.like-badge.g1 { background: #fbd9ce; color: #a8391c; }
+.tm-grid line { stroke: var(--line); stroke-width: 1; }
+.tm-base { stroke: #c9d6dc; stroke-width: 1; }
+.tm-line { fill: none; stroke: #0a7ea4; stroke-width: 2; stroke-linejoin: round; }
+.tm-xl text { font-size: 10px; fill: var(--muted); text-anchor: middle; }
+.tm-cross line { stroke: var(--sea-deep); stroke-width: 1; stroke-dasharray: 3 3; }
+.tm-cross circle { fill: #0a7ea4; stroke: #fff; stroke-width: 2; }
+.tm-tip { margin: 4px 0 0; min-height: 1.2em; line-height: 1.5; color: var(--text); }
+.tm-empty, .tm-source { margin: 8px 2px; }
