@@ -1986,16 +1986,19 @@ function spotOfCatch(albumId, c) {
 }
 
 // 釣れた回ごとの「そのときの潮」：潮名・流れ・潮位
-async function spotPatterns(spot) {
-  const hits = spot.catches.flatMap(c => hitsOf(c).filter(h => h.tide_name && isFinite(Date.parse(h.at))).map(h => ({ ...h, c })));
+// 釣果ごと・回ごと。潮位は見ている場所（lat, lng）のその時刻の値で比べる（ほかの場所の釣果を選んだときも同じ）
+// key＝「釣果ID#回の番号」
+async function hitPatterns(catches, lat, lng) {
+  const hits = catches.flatMap(c => hitsOf(c).map((h, i) => ({ ...h, c, key: `${c.catch_id}#${i}` }))
+    .filter(h => h.tide_name && isFinite(Date.parse(h.at))));
   const res = await Promise.all(hits.map(async h => {
     const t = Date.parse(h.at);
-    const r = await tideLevel(spot.lat, spot.lng, new Date(t));
+    const r = await tideLevel(lat, lng, new Date(t));
     if (!r || r.level == null || !r.prev || !r.next) return null;
     const st = tideStageAt([r.prev, r.next], t);
-    return { t, name: h.tide_name, level: r.level, dir: st.dir, s: st.s, swing: Math.abs(r.next.h - r.prev.h), label: stageLabel(st), species: h.species };
+    return { key: h.key, catchId: h.c.catch_id, t, name: h.tide_name, level: r.level, dir: st.dir, s: st.s, swing: Math.abs(r.next.h - r.prev.h), label: stageLabel(st), species: h.species };
   }));
-  return res.filter(Boolean).sort((a, b) => b.t - a.t);
+  return res.filter(Boolean).sort((a, b) => a.t - b.t);
 }
 
 // その時刻が、どの回にどれだけ似ているか：流れ・潮位・潮の上下幅が近ければ似ている。
@@ -2164,7 +2167,8 @@ function viewTideMonth(albumId, params) {
   let view = 'cal'; // 最初はカレンダー
   let selected = Number(params.get('d')) || null; // カレンダーで選んだ日
   let req = 0;
-  let result = null; // { spotKey, month, days, lo, hi }
+  let result = null; // { spotKey, month, days, lo, hi, all（選べる回）, chosen（選んだ回の key） }
+  let showOthers = false; // ほかの場所の釣果も選べるように開く
 
   const monthHref = (key, dy) => {
     const dt = new Date(year, mon - 1 + dy, 1);
@@ -2206,6 +2210,15 @@ function viewTideMonth(albumId, params) {
     if (!spot) return;
 
     document.getElementById('spot-select').addEventListener('change', e => { location.hash = monthHref(e.target.value, 0).replace(/&amp;/g, '&'); });
+    document.getElementById('tm-patterns').addEventListener('change', e => {
+      const box = e.target;
+      if (!result || !(box.dataset.catch || box.dataset.hit)) return;
+      const keys = box.dataset.catch ? result.all.filter(p => p.catchId === box.dataset.catch).map(p => p.key) : [box.dataset.hit];
+      keys.forEach(k => (box.checked ? result.chosen.add(k) : result.chosen.delete(k)));
+      recalc();
+      drawPatterns();
+      drawDays();
+    });
     $app.querySelectorAll('[data-filter]').forEach(el => el.addEventListener('click', () => {
       filters[el.dataset.filter] = !filters[el.dataset.filter];
       el.setAttribute('aria-pressed', String(filters[el.dataset.filter]));
@@ -2216,40 +2229,87 @@ function viewTideMonth(albumId, params) {
       $app.querySelectorAll('[data-view]').forEach(b => b.setAttribute('aria-pressed', String(b === el)));
       drawDays();
     }));
-    if (result && result.spotKey === spot.key && result.sig === signature(spot)) {
-      drawPatterns(result.patterns);
+    if (result && result.spotKey === spot.key && result.sig === signature(spots)) {
+      drawPatterns();
       drawDays();
-    } else compute(spot);
+    } else compute(spot, spots);
   }
 
   // ポイントの釣果が変わったら計算し直す
-  const signature = spot => spot.catches.map(c => c.catch_id + c.updated_at).join();
+  const signature = spots => spots.flatMap(sp => sp.catches).map(c => c.catch_id + c.updated_at).join();
 
-  async function compute(spot) {
+  async function compute(spot, spots) {
     const n = ++req;
-    const [patterns, month] = await Promise.all([spotPatterns(spot), tideMonth(spot.lat, spot.lng, year, mon)]);
+    // 選べる釣果：この場所の釣果（新しい順）→ ほかの場所の釣果（新しい順）
+    const here = [...spot.catches].sort((a, b) => (a.caught_at < b.caught_at ? 1 : -1));
+    const others = spots.filter(sp => sp !== spot).flatMap(sp => sp.catches).sort((a, b) => (a.caught_at < b.caught_at ? 1 : -1));
+    const [all, month] = await Promise.all([hitPatterns([...here, ...others], spot.lat, spot.lng), tideMonth(spot.lat, spot.lng, year, mon)]);
     if (n !== req) return;
-    result = { spotKey: spot.key, sig: signature(spot), lat: spot.lat, lng: spot.lng, patterns, month, days: null };
+    const prev = result && result.spotKey === spot.key ? result.chosen : null;
+    const hereIds = new Set(here.map(c => c.catch_id));
+    result = {
+      spotKey: spot.key, sig: signature(spots), lat: spot.lat, lng: spot.lng, month, days: null,
+      here, others, all,
+      // 最初はこの場所の釣果の回をすべて選ぶ（釣果が更新されたときは、前の選び方を残す）
+      chosen: prev ? new Set([...prev].filter(k => all.some(p => p.key === k))) : new Set(all.filter(p => hereIds.has(p.catchId)).map(p => p.key))
+    };
     if (month) {
-      result.days = tideDayRows(month, patterns, year, mon);
-      const hs = result.days.flatMap(d => d.samples.map(p => p.h)).filter(h => h != null);
+      const hs = [];
+      for (let t = month.from; t <= month.to; t += SAMPLE_MS) {
+        const h = month.levelAt(t);
+        if (h != null) hs.push(h);
+      }
       result.lo = Math.floor(Math.min(...hs) / 10) * 10;
       result.hi = Math.ceil(Math.max(...hs) / 10) * 10;
     }
-    drawPatterns(patterns);
+    if (result.all.some(p => !hereIds.has(p.catchId) && result.chosen.has(p.key))) showOthers = true;
+    recalc();
+    drawPatterns();
     drawDays();
   }
 
-  function drawPatterns(patterns) {
+  // 選んだ回で、似ている時間を計算し直す
+  function recalc() {
+    const patterns = result.all.filter(p => result.chosen.has(p.key));
+    result.patterns = patterns;
+    result.days = result.month ? tideDayRows(result.month, patterns, year, mon) : null;
+  }
+
+  // 参考にする釣果：釣果ごとにチェック、回が2つ以上ならその下に回ごとのチェック
+  function catchRows(list) {
+    return list.map(c => {
+      const ps = result.all.filter(p => p.catchId === c.catch_id);
+      if (!ps.length) return '';
+      const on = ps.filter(p => result.chosen.has(p.key)).length;
+      const d = new Date(c.caught_at);
+      const date = `${d.getFullYear() !== year ? `${d.getFullYear()}/` : ''}${d.getMonth() + 1}/${d.getDate()}`;
+      const patText = p => `<b>${esc(p.name)}・${esc(p.label)}・${p.level}cm</b>`;
+      return `<div class="tm-catch${on ? ' on' : ''}">
+        <label class="tm-check"><input type="checkbox" data-catch="${esc(c.catch_id)}" ${on === ps.length ? 'checked' : ''} ${on && on < ps.length ? 'data-mixed' : ''}>
+          <span><span class="tm-catch-title">${date}　${esc(c.species || '')}</span>${c.place_name ? `<span class="muted small">　${esc(c.place_name)}</span>` : ''}
+          ${ps.length === 1 ? `<br><span class="small">${jstTime(ps[0].t)}　${patText(ps[0])}</span>` : ''}</span></label>
+        ${ps.length > 1 ? `<div class="tm-hits">${ps.map((p, i) => `<label class="tm-check small"><input type="checkbox" data-hit="${esc(p.key)}" ${result.chosen.has(p.key) ? 'checked' : ''}>
+          <span>${i + 1}回目 ${jstTime(p.t)}　${patText(p)}　<span class="muted">${esc(p.species || '')}</span></span></label>`).join('')}</div>` : ''}
+      </div>`;
+    }).join('');
+  }
+
+  function drawPatterns() {
     const el = document.getElementById('tm-patterns');
-    if (!el) return;
-    el.innerHTML = patterns.length
-      ? `<p class="field-label">このポイントで釣れたときの潮</p>
-        <ul class="tm-pats">${patterns.map(p => {
-          const d = new Date(p.t);
-          return `<li><span class="muted">${d.getFullYear() !== year ? `${d.getFullYear()}/` : ''}${d.getMonth() + 1}/${d.getDate()} ${jstTime(p.t)}</span> <b>${esc(p.name)}・${esc(p.label)}・${p.level}cm</b> <span class="muted">${esc(p.species || '')}</span></li>`;
-        }).join('')}</ul>`
-      : '<p class="muted small">このポイントの釣果の時刻では、潮位のデータが見つかりませんでした。</p>';
+    if (!el || !result) return;
+    const hereRows = catchRows(result.here);
+    const otherCount = result.others.filter(c => result.all.some(p => p.catchId === c.catch_id)).length;
+    el.innerHTML = result.all.length
+      ? `<p class="field-label">参考にする釣果 <span class="muted small">（${result.chosen.size}回を選択中）</span></p>
+        <div class="tm-catches">${hereRows || '<p class="muted small">この場所の釣果の時刻では、潮位のデータが見つかりませんでした。</p>'}</div>
+        ${otherCount ? (showOthers
+          ? `<p class="field-label tm-others-label">ほかの場所の釣果</p><div class="tm-catches">${catchRows(result.others)}</div>`
+          : `<button type="button" class="btn small block" id="show-others">ほかの場所の釣果も選ぶ（${otherCount}件）</button>`) : ''}
+        ${result.chosen.size ? '' : '<p class="muted small">釣果を1つ以上選ぶと、似ている日時に印が付きます。</p>'}`
+      : '<p class="muted small">潮を選んだ釣果の時刻では、潮位のデータが見つかりませんでした。</p>';
+    el.querySelectorAll('[data-mixed]').forEach(i => { i.indeterminate = true; });
+    const more = document.getElementById('show-others');
+    if (more) more.addEventListener('click', () => { showOthers = true; drawPatterns(); });
   }
 
   const isPast = day => day.start + 86400000 <= Date.now();
