@@ -6,6 +6,7 @@
 //   #/a/<id>/map | list    アルバム（地図／一覧）
 //   #/a/<id>/new?lat=&lng=&place= 釣果の登録（?draft=<id> で「釣れた！」の下書きの続き）
 //   #/a/<id>/trip          釣行（開始・終了・釣れた！）
+//   #/a/<id>/tide?p=&m=    月間潮表（釣ったポイントの1か月の潮と、釣れたときに似ている日時）
 //   #/a/<id>/c/<cid>       詳細
 //   #/a/<id>/c/<cid>/edit  編集
 //   #/a/<id>/settings      設定
@@ -16,7 +17,7 @@ import {
   getSettings, saveSettings, getAlbumCache, setAlbumCache, getHomeCache, setHomeCache
 } from './api.js';
 import { MAX_PHOTOS, photoImg, preparePhoto, prepareIcon, blobToBase64 } from './photos.js';
-import { tideForDate, tideLevel, tideSeries, jstTime } from './tide.js';
+import { tideForDate, tideLevel, tideSeries, tideMonth, tideStageAt, stageLabel, jstTime } from './tide.js';
 import {
   activeTrip, startTrip, endTrip, recordPoint, recordOpen, addHitDraft, removeDraft, outbox, flushOutbox,
   staleState, estimatePoint, lastPointTime
@@ -169,7 +170,8 @@ function icon(name) {
     x: '<path d="M6 6l12 12M18 6L6 18"/>',
     edit: '<path d="M4 20h4L19 9l-4-4L4 16z M13 7l4 4"/>',
     trip: '<path d="M6.5 12c2.2-3.6 5.4-5.5 8.8-5.5 2.6 0 4.5 2 5.7 5.5-1.2 3.5-3.1 5.5-5.7 5.5-3.4 0-6.6-1.9-8.8-5.5z M6.5 12L2.5 8v8z"/><circle cx="16.6" cy="10.8" r=".6"/>',
-    stop: '<rect x="7" y="7" width="10" height="10" rx="2"/>'
+    stop: '<rect x="7" y="7" width="10" height="10" rx="2"/>',
+    tide: '<path d="M3 9.5c2.2 0 2.3-2 4.5-2s2.3 2 4.5 2 2.3-2 4.5-2 2.3 2 4.5 2 M3 15.5c2.2 0 2.3-2 4.5-2s2.3 2 4.5 2 2.3-2 4.5-2 2.3 2 4.5 2"/>'
   };
   return `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${paths[name] || ''}</svg>`;
 }
@@ -304,6 +306,7 @@ function renderView() {
     if (sub === 'new') return viewForm(albumId, null, params);
     if (sub === 'settings') return viewSettings(albumId);
     if (sub === 'trip') return viewTrip(albumId);
+    if (sub === 'tide') return viewTideMonth(albumId, params);
     if (sub === 'edit') return viewAlbumEdit(albumId);
     if (sub === 'c' && parts[3]) {
       if (parts[4] === 'edit') return viewForm(albumId, parts[3], params);
@@ -732,6 +735,7 @@ function tabbar(albumId, active) {
     ${tab('trip', '釣行', `#/a/${albumId}/trip`)}
     ${tab('map', '地図', `#/a/${albumId}/map`)}
     ${tab('list', '一覧', `#/a/${albumId}/list`)}
+    ${tab('tide', '潮表', `#/a/${albumId}/tide`)}
   </nav>`;
 }
 
@@ -1830,6 +1834,7 @@ function viewDetail(albumId, catchId) {
           <div id="mini-map" class="mini-map"></div>
           <p class="muted small">${esc(fmtCoord(c.lat, c.lng))} ${locSourceChip(c)}</p>
           ${trip ? `<a class="btn block" href="#/a/${esc(albumId)}/map?trip=${esc(trip.trip_id)}">${icon('trip')} 釣行のルートを見る（${esc(tripTitle(albumId, trip))}）</a>` : ''}
+          ${spotOfCatch(albumId, c) ? `<a class="btn block" href="#/a/${esc(albumId)}/tide?p=${esc(spotOfCatch(albumId, c).key)}">${icon('tide')} この場所の月間潮表</a>` : ''}
           <a class="btn block" href="${esc(googleMapsUrl(c.lat, c.lng))}" target="_blank" rel="noopener">Googleマップで開く</a>
         </section>
         <p class="muted small meta">登録：${esc(memberName(albumId, c.created_by))}（${esc(fmtDateTime(c.created_at))}）<br>
@@ -1925,6 +1930,274 @@ async function sendTrips(albumId, { quiet = false } = {}) {
   if (res.error && !quiet) toast(`釣行の記録を送れませんでした（${res.error.message}）。電波のある所で「釣行」を開くと送り直します`, 5000);
   notify(albumId);
   return res;
+}
+
+// ---------- 月間潮表 ----------
+// 釣ったポイント（釣果の位置を 150m 以内でまとめたもの）ごとに、1か月の潮位を日ごとに並べ、
+// そのポイントで釣れたときと「流れ（上げ／下げ○分）」「潮位」が似ている時間に印を付ける。
+
+const SPOT_M = 150;          // 同じポイントとみなす半径
+const LIKE_STAGE = 1;        // 流れの差（○分）がこれ以内なら似ている
+const LIKE_LEVEL = 15;       // 潮位の差（cm）がこれ以内なら似ている
+const LIKE_SWING = 0.2;      // 潮の上下幅（その回の干潮〜満潮の差）の違いがこの割合以内なら似ている
+const SAMPLE_MS = 10 * 60000;
+
+// 潮を選んだ釣果があるポイントの一覧（古い釣果から順にまとめるので、キーは変わりにくい）
+function spotsOf(albumId) {
+  const list = catchesOf(albumId)
+    .filter(c => c.species && isFinite(c.lat) && isFinite(c.lng) && hitsOf(c).some(h => h.tide_name))
+    .sort((a, b) => (a.caught_at < b.caught_at ? -1 : 1));
+  const spots = [];
+  for (const c of list) {
+    let spot = spots.find(sp => distanceM(sp, c) <= SPOT_M);
+    if (!spot) spots.push(spot = { key: c.catch_id, lat: Number(c.lat), lng: Number(c.lng), catches: [] });
+    spot.catches.push(c);
+  }
+  for (const sp of spots) {
+    const names = sp.catches.map(c => c.place_name).filter(Boolean);
+    const top = names.sort((a, b) => names.filter(n => n === b).length - names.filter(n => n === a).length)[0];
+    const d = new Date(sp.catches[0].caught_at);
+    sp.name = top || `場所名なし（${d.getMonth() + 1}/${d.getDate()}〜）`;
+  }
+  return spots.sort((a, b) => b.catches.length - a.catches.length);
+}
+
+function spotOfCatch(albumId, c) {
+  return spotsOf(albumId).find(sp => sp.catches.some(x => x.catch_id === c.catch_id)) || null;
+}
+
+// 釣れた回ごとの「そのときの潮」：潮名・流れ・潮位
+async function spotPatterns(spot) {
+  const hits = spot.catches.flatMap(c => hitsOf(c).filter(h => h.tide_name && isFinite(Date.parse(h.at))).map(h => ({ ...h, c })));
+  const res = await Promise.all(hits.map(async h => {
+    const t = Date.parse(h.at);
+    const r = await tideLevel(spot.lat, spot.lng, new Date(t));
+    if (!r || r.level == null || !r.prev || !r.next) return null;
+    const st = tideStageAt([r.prev, r.next], t);
+    return { t, name: h.tide_name, level: r.level, dir: st.dir, s: st.s, swing: Math.abs(r.next.h - r.prev.h), label: stageLabel(st), species: h.species };
+  }));
+  return res.filter(Boolean).sort((a, b) => b.t - a.t);
+}
+
+// その時刻が、どの回にどれだけ似ているか：流れ・潮位・潮の上下幅が近ければ似ている。
+// 2＝潮名も同じ（◎）、1＝潮名は違う（○）、0＝似ていない
+function likeness(patterns, name, level, st) {
+  let best = { grade: 0, p: null };
+  const swing = Math.abs(st.next.h - st.prev.h);
+  for (const p of patterns) {
+    if (p.dir !== st.dir || Math.abs(p.s - st.s) > LIKE_STAGE || Math.abs(p.level - level) > LIKE_LEVEL) continue;
+    if (Math.abs(swing - p.swing) > Math.max(10, p.swing * LIKE_SWING)) continue;
+    const grade = p.name === name ? 2 : 1;
+    if (grade > best.grade) best = { grade, p };
+  }
+  return best;
+}
+
+// 1日分：10分ごとに潮位と流れを出し、似ている時間をひとまとまりの「時間帯」にする
+function tideDayRows(month, patterns, year, mon) {
+  const days = [];
+  const count = new Date(year, mon, 0).getDate();
+  for (let d = 1; d <= count; d++) {
+    const start = month.from + (d - 1) * 86400000;
+    const name = tideForDate(new Date(year, mon - 1, d)).name;
+    const samples = [];
+    for (let t = start; t <= start + 86400000; t += SAMPLE_MS) {
+      const h = month.levelAt(t);
+      const st = tideStageAt(month.events, t);
+      samples.push({ t, h, st, like: h == null || !st ? { grade: 0 } : likeness(patterns, name, h, st) });
+    }
+    const windows = [];
+    for (const smp of samples.slice(0, -1)) {
+      const last = windows[windows.length - 1];
+      if (!smp.like.grade) continue;
+      if (last && last.to === smp.t - SAMPLE_MS) {
+        last.to = smp.t;
+        if (smp.like.grade > last.grade) Object.assign(last, { grade: smp.like.grade, p: smp.like.p });
+      } else windows.push({ from: smp.t, to: smp.t, grade: smp.like.grade, p: smp.like.p });
+    }
+    const events = month.events.filter(e => e.ms >= start && e.ms < start + 86400000);
+    days.push({ d, start, name, samples, windows, events, grade: Math.max(0, ...windows.map(w => w.grade)) });
+  }
+  return days;
+}
+
+// 1日の小さなグラフ（0〜24時）。縦軸は月の中で同じ目盛り。似ている時間帯は帯（◎濃い・○薄い）
+const MINI = { W: 320, H: 70, L: 4, R: 4, T: 6, B: 16 };
+function tideMiniSvg(day, lo, hi) {
+  const { W, H, L, R, T, B } = MINI;
+  const x = t => L + (t - day.start) / 86400000 * (W - L - R);
+  const y = h => T + (hi - h) / (hi - lo) * (H - T - B);
+  const f = n => n.toFixed(1);
+  const pts = day.samples.filter(p => p.h != null);
+  const line = pts.map((p, i) => `${i ? 'L' : 'M'}${f(x(p.t))},${f(y(p.h))}`).join('');
+  const base = H - B;
+  return `<svg class="tm-svg" viewBox="0 0 ${W} ${H}" data-day="${day.d}" role="img" aria-label="${day.d}日の潮位">
+    <g class="tm-grid">${[6, 12, 18].map(hr => `<line x1="${f(x(day.start + hr * 3600000))}" x2="${f(x(day.start + hr * 3600000))}" y1="${T}" y2="${base}"/>`).join('')}</g>
+    <line class="tm-base" x1="${L}" x2="${W - R}" y1="${base}" y2="${base}"/>
+    ${day.windows.map(w => `<rect class="tm-band g${w.grade}" x="${f(x(w.from))}" y="${T}" width="${f(Math.max(3, x(w.to + SAMPLE_MS) - x(w.from)))}" height="${base - T}" rx="2"/>`).join('')}
+    <path class="tm-line" d="${line}"/>
+    <g class="tm-xl">${[6, 12, 18].map(hr => `<text x="${f(x(day.start + hr * 3600000))}" y="${H - 3}">${hr}時</text>`).join('')}</g>
+    <g class="tm-cross" hidden><line y1="${T}" y2="${base}"/><circle r="3.5"/></g>
+  </svg>`;
+}
+
+function viewTideMonth(albumId, params) {
+  const st = stateOf(albumId);
+  const now = new Date();
+  const m = /^(\d{4})-(\d{2})$/.exec(params.get('m') || '');
+  const year = m ? Number(m[1]) : now.getFullYear();
+  const mon = m ? Number(m[2]) : now.getMonth() + 1;
+  let onlyLike = false;
+  let req = 0;
+  let result = null; // { spotKey, month, days, lo, hi }
+
+  const monthHref = (key, dy) => {
+    const dt = new Date(year, mon - 1 + dy, 1);
+    return `#/a/${esc(albumId)}/tide?p=${esc(key)}&m=${dt.getFullYear()}-${pad(dt.getMonth() + 1)}`;
+  };
+
+  function draw() {
+    const spots = spotsOf(albumId);
+    const spot = spots.find(sp => sp.key === params.get('p')) || spots[0];
+    let html = '';
+    if (st.error && st.error.code === 'invalid_token') html += invalidTokenBox(albumId);
+    if (!spot) {
+      html += st.data || !st.loading
+        ? `<div class="empty"><p>潮を選んだ釣果を登録すると、その釣り場（ポイント）の月間潮表がここに出ます。</p><a class="btn primary" href="#/a/${esc(albumId)}/new">釣果を登録する</a></div>`
+        : '<div class="skeleton-card"></div>';
+    } else {
+      html += `<section class="card form tm-head">
+          <label>ポイント
+            <select id="spot-select">${spots.map(sp => `<option value="${esc(sp.key)}" ${sp === spot ? 'selected' : ''}>${esc(sp.name)}（釣果${sp.catches.length}件）</option>`).join('')}</select>
+          </label>
+          <div id="tm-patterns"><p class="muted small">このポイントで釣れたときの潮を調べています…</p></div>
+        </section>
+        <div class="tm-month">
+          <a class="icon-btn" href="${monthHref(spot.key, -1)}" aria-label="前の月">${icon('back')}</a>
+          <b>${year}年${mon}月</b>
+          <a class="icon-btn flip" href="${monthHref(spot.key, 1)}" aria-label="次の月">${icon('back')}</a>
+        </div>
+        <div class="tm-legend">
+          <span><i class="lg-band g2"></i>◎ 潮名も同じ</span>
+          <span><i class="lg-band g1"></i>○ 流れ・潮位が似ている</span>
+          <label class="switch"><input type="checkbox" id="only-like" ${onlyLike ? 'checked' : ''}><span class="switch-track"></span>似ている日だけ</label>
+        </div>
+        <div id="tm-days"><div class="skeleton-card"></div></div>`;
+    }
+    $app.innerHTML = `${albumTopbar(albumId)}<main class="page with-tabbar">${html}</main>${tabbar(albumId, 'tide')}`;
+    if (!spot) return;
+
+    document.getElementById('spot-select').addEventListener('change', e => { location.hash = monthHref(e.target.value, 0).replace(/&amp;/g, '&'); });
+    document.getElementById('only-like').addEventListener('change', e => { onlyLike = e.target.checked; drawDays(); });
+    if (result && result.spotKey === spot.key && result.sig === signature(spot)) {
+      drawPatterns(result.patterns);
+      drawDays();
+    } else compute(spot);
+  }
+
+  // ポイントの釣果が変わったら計算し直す
+  const signature = spot => spot.catches.map(c => c.catch_id + c.updated_at).join();
+
+  async function compute(spot) {
+    const n = ++req;
+    const [patterns, month] = await Promise.all([spotPatterns(spot), tideMonth(spot.lat, spot.lng, year, mon)]);
+    if (n !== req) return;
+    result = { spotKey: spot.key, sig: signature(spot), patterns, month, days: null };
+    if (month) {
+      result.days = tideDayRows(month, patterns, year, mon);
+      const hs = result.days.flatMap(d => d.samples.map(p => p.h)).filter(h => h != null);
+      result.lo = Math.floor(Math.min(...hs) / 10) * 10;
+      result.hi = Math.ceil(Math.max(...hs) / 10) * 10;
+    }
+    drawPatterns(patterns);
+    drawDays();
+  }
+
+  function drawPatterns(patterns) {
+    const el = document.getElementById('tm-patterns');
+    if (!el) return;
+    el.innerHTML = patterns.length
+      ? `<p class="field-label">このポイントで釣れたときの潮</p>
+        <ul class="tm-pats">${patterns.map(p => {
+          const d = new Date(p.t);
+          return `<li><span class="muted">${d.getFullYear() !== year ? `${d.getFullYear()}/` : ''}${d.getMonth() + 1}/${d.getDate()} ${jstTime(p.t)}</span> <b>${esc(p.name)}・${esc(p.label)}・${p.level}cm</b> <span class="muted">${esc(p.species || '')}</span></li>`;
+        }).join('')}</ul>
+        <p class="muted small">似ている＝流れ（上げ／下げ○分）の差が${LIKE_STAGE}分以内・潮位の差が${LIKE_LEVEL}cm以内・潮の上下幅（干潮〜満潮の差）の違いが${LIKE_SWING * 100}%以内。潮名も同じなら◎、違えば○。</p>`
+      : '<p class="muted small">このポイントの釣果の時刻では、潮位のデータが見つかりませんでした。</p>';
+  }
+
+  function drawDays() {
+    const el = document.getElementById('tm-days');
+    if (!el || !result) return;
+    const { month, days, lo, hi } = result;
+    if (!month) {
+      el.innerHTML = '<p class="muted small tm-empty">この月の潮位データはありません（前年〜来年の分まで見られます）。</p>';
+      return;
+    }
+    const wd = '日月火水木金土';
+    const shown = days.filter(d => !onlyLike || d.grade);
+    const likeCount = days.filter(d => d.grade).length;
+    el.innerHTML = `<p class="muted small tm-count">似ている時間がある日：${likeCount}日（◎${days.filter(d => d.grade === 2).length}日）</p>
+      ${shown.length ? shown.map(day => {
+        const dt = new Date(year, mon - 1, day.d);
+        return `<section class="card tm-day${day.grade ? ' like' : ''}">
+          <div class="tm-day-head">
+            <b class="${dt.getDay() === 0 ? 'sun' : dt.getDay() === 6 ? 'sat' : ''}">${mon}/${day.d}（${wd[dt.getDay()]}）</b>
+            <span class="chip">${esc(day.name)}</span>
+            ${day.grade ? `<span class="like-badge g${day.grade}">${day.grade === 2 ? '◎' : '○'}</span>` : ''}
+            <span class="tm-ev muted small">${day.events.map(e => `${e.type === '満潮' ? '満' : '干'} ${jstTime(e.ms)}`).join('　')}</span>
+          </div>
+          ${tideMiniSvg(day, lo, hi)}
+          <p class="tm-tip muted small" data-tip="${day.d}">${day.windows.map(w => `${w.grade === 2 ? '◎' : '○'} ${jstTime(w.from)}〜${jstTime(w.to + SAMPLE_MS)}（${new Date(w.p.t).getMonth() + 1}/${new Date(w.p.t).getDate()}の${esc(w.p.label)}・${w.p.level}cm に似ている）`).join('<br>')}</p>
+        </section>`;
+      }).join('') : '<p class="muted small tm-empty">この月は、似ている時間がありません。</p>'}
+      <p class="muted small tm-source">${esc(month.station.name)}（約${Math.round(month.km)}km）の予測です。出典：気象庁「潮位表」。川の上流などでは時刻が遅れることがあります。</p>`;
+  }
+
+  // グラフをなぞると、その時刻の潮位と流れを出す
+  function onPoint(e) {
+    const svg = e.target.closest && e.target.closest('.tm-svg');
+    if (!svg || !result || !result.days) return;
+    const day = result.days.find(d => String(d.d) === svg.dataset.day);
+    const box = svg.getBoundingClientRect();
+    const { W, L, R } = MINI;
+    const vx = Math.min(W - R, Math.max(L, (e.clientX - box.left) / box.width * W));
+    const t = day.start + Math.round((vx - L) / (W - L - R) * 86400000 / SAMPLE_MS) * SAMPLE_MS;
+    const smp = day.samples.find(p => p.t === t);
+    if (!smp || smp.h == null) return;
+    const x = L + (t - day.start) / 86400000 * (W - L - R);
+    const y = MINI.T + (result.hi - smp.h) / (result.hi - result.lo) * (MINI.H - MINI.T - MINI.B);
+    const cross = svg.querySelector('.tm-cross');
+    cross.hidden = false;
+    cross.querySelector('line').setAttribute('x1', x);
+    cross.querySelector('line').setAttribute('x2', x);
+    cross.querySelector('circle').setAttribute('cx', x);
+    cross.querySelector('circle').setAttribute('cy', y);
+    const tip = svg.parentElement.querySelector('.tm-tip');
+    if (!tip.dataset.orig) tip.dataset.orig = tip.innerHTML || ' ';
+    tip.innerHTML = `<b>${jstTime(t)}　${Math.round(smp.h)}cm・${esc(stageLabel(smp.st))}</b>${smp.like.grade ? `（${smp.like.grade === 2 ? '◎' : '○'}）` : ''}`;
+  }
+  function onLeave(e) {
+    const svg = e.target.closest && e.target.closest('.tm-svg');
+    if (!svg) return;
+    svg.querySelector('.tm-cross').hidden = true;
+    const tip = svg.parentElement.querySelector('.tm-tip');
+    if (tip.dataset.orig) { tip.innerHTML = tip.dataset.orig.trim(); delete tip.dataset.orig; }
+  }
+  $app.addEventListener('pointermove', onPoint);
+  $app.addEventListener('pointerdown', onPoint);
+  $app.addEventListener('pointerleave', onLeave, true);
+  $app.addEventListener('pointercancel', onLeave, true);
+
+  current.refresh = draw;
+  current.cleanup = () => {
+    $app.removeEventListener('pointermove', onPoint);
+    $app.removeEventListener('pointerdown', onPoint);
+    $app.removeEventListener('pointerleave', onLeave, true);
+    $app.removeEventListener('pointercancel', onLeave, true);
+  };
+  draw();
+  refreshAlbum(albumId);
 }
 
 // 自分の最後の釣行の日付（無ければ「ー」）

@@ -240,3 +240,36 @@ export async function tideSeries(lat, lng, from, to) {
     levelAt: t => levelAt(knots, t)
   };
 }
+
+// 潮の段階（連続値）：前の満干潮〜次の満干潮の時間を10に分けて何分目か（0〜10）。dir＝上げ／下げ。前後の満干潮が無ければ null
+export function tideStageAt(events, t) {
+  let prev = null;
+  let next = null;
+  for (const e of events) {
+    if (e.ms <= t) prev = e;
+    else { next = e; break; }
+  }
+  if (!prev || !next) return null;
+  return { dir: prev.type === '干潮' ? '上げ' : '下げ', s: (t - prev.ms) / (next.ms - prev.ms) * 10, prev, next };
+}
+
+// 「上げ3分」のような表し方（四捨五入。0・10は「干潮」「満潮」）
+export function stageLabel(st) {
+  if (!st) return '';
+  const n = Math.round(st.s);
+  if (n <= 0) return st.prev.type;
+  if (n >= 10) return st.next.type;
+  return `${st.dir}${n}分`;
+}
+
+// 1か月分（日本時間の month 月）の潮位。{ station, km, from, to, events, levelAt }。データが無ければ null
+export async function tideMonth(lat, lng, year, month) {
+  if (!isFinite(lat) || !isFinite(lng)) return null;
+  const best = await nearestStation(lat, lng);
+  if (!best) return null;
+  const from = Date.UTC(year, month - 1, 1) - JST;
+  const to = Date.UTC(year, month, 1) - JST;
+  const { knots, events } = await knotsBetween(best.station.code, from, to);
+  if (!knots.some(k => k.t >= from && k.t < to)) return null;
+  return { ...best, from, to, events, levelAt: t => levelAt(knots, t) };
+}
