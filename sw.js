@@ -1,7 +1,7 @@
 // Service Worker：ホーム画面から起動できるようにし、写真を端末にためて2回目以降すぐ表示する。
 // 画面のファイル（app.js など）を変えたら CACHE_VERSION を上げる。
 
-const CACHE_VERSION = 'v13';
+const CACHE_VERSION = 'v14';
 const SHELL_CACHE = 'shell-' + CACHE_VERSION;
 const LIB_CACHE = 'lib-v1';   // CDN のライブラリ（バージョン固定なので変わらない）
 const IMG_CACHE = 'img-v2';   // 写真（CORS で取得したもの）
@@ -18,6 +18,7 @@ const SHELL_FILES = [
   './js/photos.js',
   './js/map.js',
   './js/tide.js',
+  './js/trip.js',
   './manifest.json',
   './icons/icon-192.png'
 ];

@@ -8,7 +8,9 @@ const SCHEMA = {
   members: ['member_id', 'album_id', 'display_name', 'token', 'joined_at'],
   catches: ['catch_id', 'album_id', 'caught_at', 'lat', 'lng', 'place_name', 'species', 'size_cm', 'weight_g', 'count',
     'angler_member_id', 'tide_name', 'tide_events', 'method', 'bait', 'memo', 'photo_ids',
-    'created_by', 'created_at', 'updated_by', 'updated_at', 'deleted', 'hits']
+    'created_by', 'created_at', 'updated_by', 'updated_at', 'deleted', 'hits', 'trip_id', 'loc_source', 'draft'],
+  trips: ['trip_id', 'album_id', 'member_id', 'started_at', 'ended_at', 'start_lat', 'start_lng', 'end_lat', 'end_lng',
+    'points', 'auto_ended', 'created_at', 'updated_at', 'deleted']
 };
 const ROOT_FOLDER_NAME = 'Tsuri Reco';
 const SPREADSHEET_NAME = 'Tsuri Reco データ';

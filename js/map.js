@@ -51,14 +51,14 @@ export function pinIcon(colorIndex = 0, extraClass = '') {
   });
 }
 
-// 現在地（Promise）
-export function getCurrentPosition() {
+// 現在地（Promise）。maxAge：これより新しい控えがあればそれを使う（ms）
+export function getCurrentPosition({ maxAge = 30000 } = {}) {
   return new Promise((resolve, reject) => {
     if (!navigator.geolocation) return reject(new Error('この端末では現在地を取得できません'));
     navigator.geolocation.getCurrentPosition(
       pos => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy }),
       err => reject(new Error(err.code === 1 ? '位置情報の利用が許可されていません（端末の設定を確認してください）' : '現在地を取得できませんでした')),
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 }
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: maxAge }
     );
   });
 }
@@ -118,10 +118,32 @@ function fingerUp(maxMs) {
   });
 }
 
-// アルバムの地図。釣果をピン（近いものはまとめて）表示し、長押しで onLongPress を呼ぶ
-export function createCatchMap(el, { layerKey, catches, colorOf, popupHtml, onLongPress, onError, view }) {
+// 地図の右上に置く文字ボタン（例：「ルート」）
+function addTextButton(map, label, onClick) {
+  const Control = L.Control.extend({
+    options: { position: 'topright' },
+    onAdd() {
+      const btn = L.DomUtil.create('button', 'map-btn map-text-btn');
+      btn.type = 'button';
+      btn.textContent = label;
+      L.DomEvent.disableClickPropagation(btn);
+      L.DomEvent.on(btn, 'click', onClick);
+      return btn;
+    }
+  });
+  new Control().addTo(map);
+}
+
+export const ROUTE_COLORS = ['#e4572e', '#2e86de', '#20a464', '#a55eea', '#f0932b', '#d6336c'];
+const ROUTE_MAX_ZOOM = 17; // ほとんど動かない釣行でも、寄りすぎて周りが見えなくならないように
+
+// アルバムの地図。釣果をピン（近いものはまとめて）表示し、長押しで onLongPress を呼ぶ。
+// 釣行のルートを線で表示できる（setRoutes）。onRouteButton があれば右上に「ルート」ボタンを置く
+export function createCatchMap(el, { layerKey, catches, colorOf, popupHtml, onLongPress, onError, view, onRouteButton }) {
   const map = baseMap(el, layerKey);
   addLocateButton(map, onError);
+  if (onRouteButton) addTextButton(map, 'ルート', onRouteButton);
+  const routeLayer = L.layerGroup().addTo(map);
   const cluster = L.markerClusterGroup({ showCoverageOnHover: false, maxClusterRadius: 50 });
   map.addLayer(cluster);
 
@@ -130,7 +152,7 @@ export function createCatchMap(el, { layerKey, catches, colorOf, popupHtml, onLo
     const points = [];
     list.forEach(c => {
       if (!isFinite(c.lat) || !isFinite(c.lng)) return;
-      const marker = L.marker([c.lat, c.lng], { icon: pinIcon(colorOf(c), c._pending ? 'pending' : '') });
+      const marker = L.marker([c.lat, c.lng], { icon: pinIcon(colorOf(c), c._pending ? 'pending' : c.draft ? 'draft' : '') });
       marker.bindPopup(() => popupHtml(c), { minWidth: 180, maxWidth: 240 });
       cluster.addLayer(marker);
       points.push([c.lat, c.lng]);
@@ -154,8 +176,30 @@ export function createCatchMap(el, { layerKey, catches, colorOf, popupHtml, onLo
     if (navigator.vibrate) navigator.vibrate(12);
     Promise.all([delay(320), fingerUp(1200)]).then(() => onLongPress(e.latlng, { touching: touchCount > 0 }));
   });
+  // routes：[{ id, color, latlngs: [[lat, lng], …] }]。始点は○、終点は■
+  function setRoutes(routes) {
+    routeLayer.clearLayers();
+    routes.forEach(r => {
+      if (!r.latlngs.length) return;
+      L.polyline(r.latlngs, { color: r.color, weight: 4, opacity: 0.85, dashArray: r.latlngs.length > 1 ? null : '1' }).addTo(routeLayer);
+      L.circleMarker(r.latlngs[0], { radius: 6, color: '#fff', weight: 2, fillColor: r.color, fillOpacity: 1 }).addTo(routeLayer);
+      if (r.latlngs.length > 1) {
+        const end = r.latlngs[r.latlngs.length - 1];
+        L.marker(end, { icon: L.divIcon({ className: 'route-end', html: `<span style="background:${r.color}"></span>`, iconSize: [14, 14] }), interactive: false }).addTo(routeLayer);
+      }
+    });
+  }
+
+  // その範囲が全部入るように倍率を合わせる（大きく動いた釣行は引いて、ほとんど動かない釣行は寄る。寄りすぎない）
+  function fitTo(latlngs) {
+    if (!latlngs.length) return;
+    map.fitBounds(L.latLngBounds(latlngs), { padding: [48, 48], maxZoom: ROUTE_MAX_ZOOM });
+  }
+
   return {
     map,
+    setRoutes,
+    fitTo,
     setCatches: list => setCatches(list, false),
     getView: () => ({ center: map.getCenter(), zoom: map.getZoom() }),
     remove: () => map.remove()
