@@ -738,21 +738,19 @@ function catchThumb(albumId, c) {
   return `<div class="thumb-empty">${icon('camera')}</div>`;
 }
 
-// 潮位の文言：「約80cm・下げ」と「満潮（3:12）から2時間18分後」
-function durationText(ms) {
-  const m = Math.max(0, Math.round(ms / 60000));
-  return m >= 60 ? `${Math.floor(m / 60)}時間${m % 60}分` : `${m}分`;
+// 潮位の文言：「111cm・上げ3分」。上げ○分／下げ○分は、干潮〜満潮（満潮〜干潮）の時間を10に分けて何分目か
+function tideStage(r, t) {
+  const { prev, next } = r;
+  if (!prev || !next) return r.trend;
+  const n = Math.round((t - prev.ms) / (next.ms - prev.ms) * 10);
+  if (n <= 0) return prev.type;
+  if (n >= 10) return next.type;
+  return `${prev.type === '干潮' ? '上げ' : '下げ'}${n}分`;
 }
 
 function tideNowText(r, t) {
-  const since = r.prev ? `${r.prev.type}（${jstTime(r.prev.ms)}）から${durationText(t - r.prev.ms)}後` : '';
-  return { level: `約${r.level}cm${r.trend ? '・' + r.trend : ''}`, since };
-}
-
-// 回の「潮位（予測）」の1行：約80cm・下げ　満潮（4:59）から31分後
-function tideLineHtml(r, t) {
-  const now = tideNowText(r, t);
-  return `<span class="tide-label">潮位（予測）</span><b>${esc(now.level)}</b> <span class="muted small">${esc(now.since)}</span>`;
+  const stage = tideStage(r, t);
+  return `${r.level}cm${stage ? '・' + stage : ''}`;
 }
 
 // ---------- 潮位グラフ（詳細画面） ----------
@@ -868,7 +866,7 @@ function bindTideChart(wrap, series, marks, range) {
     cross.querySelector('circle').setAttribute('cx', toX(t));
     cross.querySelector('circle').setAttribute('cy', toY(h));
     tip.hidden = false;
-    tip.textContent = `${near && marks.length > 1 ? `${marks.indexOf(near) + 1}回目 ` : near ? '釣れた時刻 ' : ''}${jstTime(t)}　約${Math.round(h)}cm`;
+    tip.textContent = `${near && marks.length > 1 ? `${marks.indexOf(near) + 1}回目 ` : near ? '釣れた時刻 ' : ''}${jstTime(t)}　${Math.round(h)}cm`;
     const px = toX(t) / W * box.width;
     tip.style.left = `${Math.min(Math.max(px, 60), box.width - 60)}px`;
   }
@@ -1564,8 +1562,7 @@ function viewForm(albumId, catchId, params) {
         el.textContent = 'ー';
         return;
       }
-      const now = tideNowText(r, d.getTime());
-      el.innerHTML = `<b>${esc(now.level.replace(/^約/, ''))}</b>`;
+      el.innerHTML = `<b>${esc(tideNowText(r, d.getTime()))}</b>`;
     });
   }
 
@@ -1783,8 +1780,7 @@ function viewDetail(albumId, catchId) {
         ['潮', h.tide_name],
         ['釣り方・仕掛け', h.method],
         ['エサ／ルアー', h.bait]
-      ])}
-      ${h.tide_name ? `<p class="tide-now" data-tide-hit="${i}" hidden></p>` : ''}
+      ]).replace('</dl>', h.tide_name ? `<dt data-tide-hit="${i}" hidden>潮位</dt><dd data-tide-hit="${i}" hidden></dd></dl>` : '</dl>')}
       ${h.memo ? `<p class="memo">${esc(h.memo)}</p>` : ''}
     </section>`;
     const photos = many ? [] : hs[0].photos; // 回が1つなら、写真は上に大きく
@@ -1828,10 +1824,10 @@ function viewDetail(albumId, catchId) {
         if (!h.tide_name) return;
         const t = new Date(h.at);
         tideLevel(c.lat, c.lng, t).then(r => {
-          const el = document.querySelector(`[data-tide-hit="${i}"]`);
-          if (!el || !r || r.level == null) return;
-          el.innerHTML = tideLineHtml(r, t.getTime());
-          el.hidden = false;
+          const els = document.querySelectorAll(`[data-tide-hit="${i}"]`);
+          if (els.length < 2 || !r || r.level == null) return;
+          els[1].textContent = tideNowText(r, t.getTime());
+          els.forEach(el => { el.hidden = false; });
         });
       });
       const range = tideChartRange(hs, trip);
