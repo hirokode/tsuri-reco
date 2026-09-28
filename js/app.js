@@ -763,6 +763,7 @@ const HOUR_MS = 3600000;
 function tideChartRange(hs, trip) {
   const hitTimes = hs.map(h => Date.parse(h.at)).filter(isFinite);
   const photoTimes = hs.flatMap(h => h.photos || []).map(p => Date.parse(p.at)).filter(isFinite).sort((a, b) => a - b);
+  if (!trip && !photoTimes.length && !hitTimes.length) return null; // 時刻が無ければグラフは出さない
   let from;
   let to;
   let basis;
@@ -770,18 +771,12 @@ function tideChartRange(hs, trip) {
     from = Date.parse(trip.started_at);
     to = trip.ended_at ? Date.parse(trip.ended_at) : Date.now();
     basis = '釣行の開始〜終了';
-  } else if (photoTimes.length >= 2) {
-    [from, to] = [photoTimes[0], photoTimes[photoTimes.length - 1]];
-    basis = '写真の撮影時刻の最初〜最後';
-  } else if (photoTimes.length === 1) {
-    [from, to] = [photoTimes[0] - 6 * HOUR_MS, photoTimes[0] + 6 * HOUR_MS];
-    basis = '写真の撮影時刻の前後6時間';
-  } else if (hitTimes.length >= 2) {
-    [from, to] = [Math.min(...hitTimes), Math.max(...hitTimes)];
-    basis = '釣れた時刻の最初〜最後';
+  } else if (photoTimes.length) {
+    [from, to] = [photoTimes[0] - 6 * HOUR_MS, photoTimes[photoTimes.length - 1] + 6 * HOUR_MS];
+    basis = photoTimes.length >= 2 ? '最初の写真の6時間前〜最後の写真の6時間後' : '写真の撮影時刻の前後6時間';
   } else {
-    [from, to] = [hitTimes[0] - 6 * HOUR_MS, hitTimes[0] + 6 * HOUR_MS];
-    basis = '釣れた時刻の前後6時間';
+    [from, to] = [Math.min(...hitTimes) - 6 * HOUR_MS, Math.max(...hitTimes) + 6 * HOUR_MS];
+    basis = hitTimes.length >= 2 ? '最初に釣れた6時間前〜最後に釣れた6時間後' : '釣れた時刻の前後6時間';
   }
   from = Math.min(from, ...hitTimes);
   to = Math.max(to, ...hitTimes);
@@ -803,8 +798,11 @@ function tideChartSvg(series, marks, range) {
   lo = Math.floor(lo / step) * step;
   hi = Math.ceil(hi / step) * step;
   if (hi === lo) hi = lo + step;
-  const x = t => L + (t - range.from) / (range.to - range.from) * (W - L - R);
   const y = h => T + (hi - h) / (hi - lo) * (H - T - B);
+  // 干潮の文字（谷の下に書く）が線と重ならないよう、足りなければ下を広げる
+  const lows = series.events.filter(e => e.type !== '満潮').map(e => e.h);
+  for (let i = 0; i < 3 && lows.some(h => y(h) > H - B - 18); i++) lo -= step;
+  const x = t => L + (t - range.from) / (range.to - range.from) * (W - L - R);
   const f = n => n.toFixed(1);
 
   const yTicks = [];
@@ -1837,7 +1835,7 @@ function viewDetail(albumId, catchId) {
         });
       });
       const range = tideChartRange(hs, trip);
-      tideSeries(c.lat, c.lng, range.from, range.to).then(series => {
+      if (range) tideSeries(c.lat, c.lng, range.from, range.to).then(series => {
         if (!series || !tideCard.isConnected) return;
         const marks = hs.map(h => ({ t: Date.parse(h.at), h: series.levelAt(Date.parse(h.at)) })).filter(m => m.h != null);
         tideCard.innerHTML = tideChartCardHtml(series, marks, range);
