@@ -21,8 +21,9 @@ import { tideForDate, tideLevel, tideSeries, tideMonth, tideStageAt, stageLabel,
 import { sunMoonDay } from './astro.js';
 import {
   activeTrip, startTrip, endTrip, recordPoint, recordOpen, addHitDraft, removeDraft, outbox, flushOutbox,
-  staleState, estimatePoint, lastPointTime
+  staleState, estimatePoint, lastPointTime, uuid
 } from './trip.js';
+import { savePending, deletePending, loadPending } from './pending.js';
 import { LAYERS, ROUTE_COLORS, mapReady, createCatchMap, createPickerMap, createMiniMap, getCurrentPosition } from './map.js';
 
 const $app = document.getElementById('app');
@@ -386,7 +387,8 @@ function catchesOf(albumId) {
   const saved = st.data ? st.data.catches : [];
   const ids = new Set(saved.map(c => c.catch_id));
   const drafts = localDrafts(albumId).filter(d => !ids.has(d.catch_id));
-  return [...st.pending, ...drafts, ...saved].sort((a, b) => (a.caught_at < b.caught_at ? 1 : a.caught_at > b.caught_at ? -1 : 0));
+  const pending = st.pending.filter(p => !ids.has(p.catch_id)); // サーバーに届いていたものは、サーバーの方を出す
+  return [...pending, ...drafts, ...saved].sort((a, b) => (a.caught_at < b.caught_at ? 1 : a.caught_at > b.caught_at ? -1 : 0));
 }
 
 // 「釣れた！」の下書きのうち、まだ送っていないもの（進行中の釣行と送信待ち）を釣果の形にする
@@ -986,7 +988,7 @@ function draftHref(albumId, c) {
 
 function catchCard(albumId, c) {
   const status = c._pending === 'sending' ? '<span class="chip">送信中…</span>'
-    : c._pending === 'error' ? `<span class="chip error">送信失敗</span>`
+    : c._pending === 'error' ? `<span class="chip error">送信待ち（電波が戻ったら自動で送ります）</span>`
     : c.draft ? `<span class="chip draft">下書き${c._localDraft ? '（釣行の終了時に送信）' : ''}</span>` : '';
   const body = `
     <div class="catch-thumb">${catchThumb(albumId, c)}</div>
@@ -1199,6 +1201,7 @@ $app.addEventListener('click', e => {
     const p = st.pending.find(x => x.catch_id === d.dataset.discard);
     if (p) (p._previews || []).forEach(u => URL.revokeObjectURL(u));
     st.pending = st.pending.filter(x => x.catch_id !== d.dataset.discard);
+    deletePending(d.dataset.discard);
     notify(current.albumId);
   }
 });
@@ -1211,7 +1214,7 @@ window.addEventListener('beforeunload', e => {
   }
 });
 
-async function uploadPhotos(token, photos, done) {
+async function uploadPhotos(token, photos, done, onUploaded) {
   // done：アップロード済みの {f,t}（再送時に同じ写真を二重に送らないため）
   const ids = [];
   for (let i = 0; i < photos.length; i++) {
@@ -1233,24 +1236,32 @@ async function uploadPhotos(token, photos, done) {
     const photo = p.takenAt ? { ...res.photo, at: toLocalIso(p.takenAt) } : res.photo;
     ids.push(photo);
     if (done) done[i] = photo;
+    if (onUploaded) await onUploaded();
   }
   return ids;
 }
 
-async function sendPending(albumId, p) {
+// 新規登録を送る。送れるまでは端末（IndexedDB）に控えておき、アプリを閉じても消えないようにする。
+// catch_id は端末で作る UUID を client_id として送るので、送り直しても二重に登録されない
+async function sendPending(albumId, p, { quiet = false } = {}) {
   const st = stateOf(albumId);
   const session = sessionFor(albumId);
+  if (p._pending === 'sending' && p._started) return; // もう送っている
   p._pending = 'sending';
+  p._started = true;
   p._error = '';
   notify(albumId);
   try {
-    const photoIds = await uploadPhotos(session.token, p._photos, p._uploaded);
-    const { catch_id, _pending, _error, _photos, _uploaded, _previews, _photoCounts, ...fields } = p;
+    if (!session) throw new ApiError('invalid_token', 'このアルバムに参加していません');
+    const photoIds = await uploadPhotos(session.token, p._photos, p._uploaded, () => savePending(albumId, p));
+    const { catch_id, _pending, _started, _error, _photos, _uploaded, _previews, _photoCounts, ...fields } = p;
     const hits = withHitPhotos(fields.hits, photoIds, _photoCounts);
-    const res = await api('saveCatch', { token: session.token, catch: { ...fields, hits, photo_ids: photoIds } });
+    const res = await api('saveCatch', { token: session.token, catch: { ...fields, client_id: catch_id, hits, photo_ids: photoIds } }, { timeout: 90000 });
     st.pending = st.pending.filter(x => x !== p);
+    deletePending(catch_id);
     (p._previews || []).forEach(u => URL.revokeObjectURL(u));
     if (st.data) {
+      st.data.catches = st.data.catches.filter(c => c.catch_id !== res.catch.catch_id);
       st.data.catches.push(res.catch);
       saveStateCache(albumId);
     }
@@ -1258,10 +1269,30 @@ async function sendPending(albumId, p) {
     refreshAlbum(albumId);
   } catch (e) {
     p._pending = 'error';
+    p._started = false;
     p._error = e.message;
-    toast('送信に失敗しました。一覧の「再送する」を押してください', 4000);
+    savePending(albumId, p);
+    if (!quiet) toast('送信に失敗しました。この端末に控えてあるので、電波が戻ったら自動で送り直します', 4500);
   }
   notify(albumId);
+}
+
+// 送れなかった登録を送り直す（起動時・電波が戻ったとき・アプリに戻ったとき）
+function resendPending() {
+  for (const [albumId, st] of Object.entries(albumState)) {
+    st.pending.filter(p => p._pending === 'error').forEach(p => sendPending(albumId, p, { quiet: true }));
+  }
+}
+
+// 前回送れなかった登録を端末の控えから戻して、送り直す
+async function restorePending() {
+  for (const { albumId, p } of await loadPending()) {
+    const st = stateOf(albumId);
+    if (st.pending.some(x => x.catch_id === p.catch_id)) continue;
+    st.pending.push({ ...p, _pending: 'error', _error: '前回送れなかった分です' });
+  }
+  if (current.albumId) notify(current.albumId);
+  resendPending();
 }
 
 // ---------- 登録・編集フォーム ----------
@@ -1748,7 +1779,7 @@ function viewForm(albumId, catchId, params) {
       // 先に一覧に出して、裏で送る
       const p = {
         ...fields,
-        catch_id: 'tmp-' + Date.now(),
+        catch_id: localDraft ? localDraft.catch_id : uuid(), // 送り直しても二重にならないよう端末で決める
         size_cm: fields.size_cm === '' ? null : fields.size_cm,
         weight_g: fields.weight_g === '' ? null : fields.weight_g,
         photo_ids: [],
@@ -1759,6 +1790,7 @@ function viewForm(albumId, catchId, params) {
         _previews: photos.filter(x => x.kind === 'new').map(x => x.previewUrl)
       };
       st.pending.push(p);
+      await savePending(albumId, p); // 送る前に端末に控える（送信中にアプリを閉じても消えないように）
       if (localDraft) removeDraft(albumId, localDraft.catch_id); // 下書きは、この登録に置きかわる
       if (trip) recordPoint(albumId, 'catch'); // 釣行中なら、登録した時の位置も記録
       dirty = false;
@@ -2880,7 +2912,9 @@ function start() {
   }
   render();
   checkTrips();
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkTrips(); });
+  restorePending();
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { checkTrips(); resendPending(); } });
+  window.addEventListener('online', resendPending);
 
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(e => console.warn('Service Worker の登録に失敗', e));

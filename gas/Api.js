@@ -184,10 +184,25 @@ function apiSaveCatch_(req) {
     const has = function (k) { return Object.prototype.hasOwnProperty.call(input, k); };
 
     if (!input.catch_id) {
+      // client_id：画面が作った ID。送り直し（電波が切れて届いたか分からなかったとき）で二重に登録しない
+      const clientId = input.client_id ? validId_(input.client_id, '釣果') : '';
+      if (clientId) {
+        const dup = readRows_('catches').filter(function (c) { return c.catch_id === clientId; })[0];
+        if (dup) {
+          if (dup.album_id !== me.album_id) throw apiError_('forbidden', 'この釣果は登録できません');
+          if (dup.draft !== 'true') return { catch: publicCatch_(dup) };
+          // 「釣れた！」の下書きが先に届いていたら、その下書きを今回の内容で埋める
+          const tripId = dup.trip_id;
+          Object.assign(dup, fields, { updated_by: me.member_id, updated_at: now });
+          dup.trip_id = fields.trip_id || tripId;
+          updateRow_('catches', dup._row, dup);
+          return { catch: publicCatch_(dup) };
+        }
+      }
       if (!has('loc_source')) fields.loc_source = '';
       fields.trip_id = fields.trip_id || findTripId_(me.album_id, fields, me.member_id);
       const row = Object.assign({
-        catch_id: Utilities.getUuid(),
+        catch_id: clientId || Utilities.getUuid(),
         album_id: me.album_id,
         tide_events: '',
         created_by: me.member_id,
