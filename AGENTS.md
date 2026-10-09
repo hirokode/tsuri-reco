@@ -47,6 +47,7 @@
 | js/tide.js | 潮名の計算（日付の月齢から）・潮位（data/tide/ の気象庁潮位表を読む） |
 | js/astro.js | 日の出・日の入り・月の出・月の入り（簡易計算。潮表の1日のグラフの帯に使う） |
 | js/trip.js | 釣行（端末での記録・位置の記録・「釣れた！」の下書き・送信待ち・終了し忘れ・位置の推定） |
+| js/pending.js | 送信待ちの釣果（新規登録・写真の Blob ごと）を IndexedDB に控える。送れるまで消さず、起動時・電波が戻ったとき・アプリに戻ったときに自動で送り直す |
 | config.js | GAS の `/exec` URL（API_URL）だけを書く |
 | sw.js / manifest.json / icons/ | PWA（ホーム画面追加・画像キャッシュ） |
 | gas/Code.js | doGet / doPost・API の振り分け・`setup()` |
@@ -89,6 +90,7 @@
 - tide_events・photo_ids・icon_photo・hits・points は JSON 文字列
 - 写真は {f, t, at}（f＝原寸・t＝サムネの Drive ファイルID、at＝撮影時刻（あれば）。位置は持たない）
 - loc_source は位置の出どころ（button＝「釣れた！」／estimated＝撮影時刻から推定／manual＝手動）。draft は「釣れた！」の下書き（魚種などが空でもよい）
+- 新規の釣果も catch_id を端末で作り、saveCatch に client_id として送る（GAS は同じ ID が既にあれば作らずにそれを返す＝送り直しても二重にならない）
 - trips（釣行）は端末で記録し、終了時に saveTrip でまとめて送る。trip_id・下書きの catch_id は端末で作る UUID（再送しても重複しない）。釣行を変更・削除できるのは本人だけ
 - hits は「釣れた回」[{at, count, photos, species, size_cm, weight_g, angler_member_id, tide_name, method, bait, memo}]（時刻順・写真は1回5枚まで）。2回以上のときだけ入れる。
   釣果の列は回のまとめ：caught_at＝最初の回・count＝合計・species＝重ならないように「・」でつなぐ・size_cm/weight_g＝最大・photo_ids＝各回の写真をつなげたもの・そのほか＝最初の回（GAS の hitSummary_ と画面の summarizeHits で同じ決め方）
