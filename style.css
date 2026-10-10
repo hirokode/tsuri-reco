@@ -391,6 +391,8 @@ body:has(.route-panel:not([hidden])) .fab { display: none; } /* 一覧の × に
 /* ---------- 下書き・位置の出どころ ---------- */
 .chip.draft { background: #fff4d6; color: #8a5a00; }
 .catch-card.draft { border: 1px dashed #d9b35a; background: #fffdf6; }
+.catch-card.bozu .thumb-empty { background: var(--sea-light); color: var(--sea); }
+.catch-card.bozu .thumb-empty .icon { width: 34px; height: 34px; }
 .loc-src { display: inline-block; font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 7px; margin-left: 4px; }
 .loc-src-line { font-size: 13px; color: var(--sea-dark); font-weight: 600; margin: -4px 0 8px; }
 .loc-src-line:empty { display: none; }
