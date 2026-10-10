@@ -1019,15 +1019,21 @@ function viewAlbum(albumId, tab) {
   if (tab === 'list') {
     const drawList = () => {
       const list = catchesOf(albumId);
+      const bozu = bozuTrips(albumId);
       let html = '';
       if (st.error && st.error.code === 'invalid_token') html += invalidTokenBox(albumId);
       else if (st.error) html += `<div class="notice error"><p>${esc(st.error.message)}</p><button class="btn small" data-action="reload">もう一度読み込む</button></div>`;
       if (!st.data && st.loading) {
         html += '<div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div>';
-      } else if (!list.length && st.data) {
+      } else if (!list.length && !bozu.length && st.data) {
         html += `<div class="empty"><p>まだ釣果がありません。</p><a class="btn primary" href="#/a/${esc(albumId)}/new">最初の釣果を登録する</a></div>`;
       } else {
-        html += `<div class="catch-list">${list.map(c => catchCard(albumId, c)).join('')}</div>`;
+        // 釣果とボウズの釣行を、新しい順に並べる（時刻の書き方が違うので Date で比べる）
+        const items = [
+          ...list.map(c => ({ at: Date.parse(c.caught_at), html: catchCard(albumId, c) })),
+          ...bozu.map(t => ({ at: Date.parse(t.started_at), html: bozuCard(albumId, t) }))
+        ].sort((a, b) => b.at - a.at);
+        html += `<div class="catch-list">${items.map(x => x.html).join('')}</div>`;
       }
       main.innerHTML = html;
       document.querySelector('.topbar h1').textContent = albumTitle(albumId);
@@ -1175,13 +1181,45 @@ function setRouteShown(albumId, ids) {
 }
 
 // 「9/27（土）4:30〜7:10・ひろ・3匹」
-function tripTitle(albumId, t) {
+// 「10/9（金）10:00〜10:26」
+function tripTime(t) {
   const s = new Date(t.started_at);
   const e = t.ended_at ? new Date(t.ended_at) : null;
   const wd = '日月火水木金土'[s.getDay()];
   const hm = d => `${d.getHours()}:${pad(d.getMinutes())}`;
+  return `${s.getMonth() + 1}/${s.getDate()}（${wd}）${hm(s)}〜${e ? hm(e) : ''}`;
+}
+
+function tripTitle(albumId, t) {
   const count = catchesOf(albumId).filter(c => c.trip_id === t.trip_id).reduce((n, c) => n + (Number(c.count) || 1), 0);
-  return `${s.getMonth() + 1}/${s.getDate()}（${wd}）${hm(s)}〜${e ? hm(e) : ''}・${memberName(albumId, t.member_id) || '自分'}・${count}匹`;
+  return `${tripTime(t)}・${memberName(albumId, t.member_id) || '自分'}・${count}匹`;
+}
+
+// ボウズ：終わった釣行のうち、釣果（「釣れた！」の下書きも含む）がひも付いていないもの。一覧に釣果と並べて出す
+const BOZU_PLACE_M = 1000; // 開始地点からこの距離以内の釣果の場所名を「〇〇付近」として出す
+function bozuTrips(albumId) {
+  const linked = new Set(catchesOf(albumId).map(c => c.trip_id).filter(Boolean));
+  return tripsOf(albumId).filter(t => t.ended_at && !linked.has(t.trip_id));
+}
+
+function bozuCard(albumId, t) {
+  const p = (t.points || [])[0];
+  let place = '';
+  if (p) {
+    const near = catchesOf(albumId).filter(c => c.place_name && isFinite(c.lat))
+      .map(c => ({ c, d: distanceM(p, { lat: Number(c.lat), lng: Number(c.lng) }) }))
+      .filter(x => x.d <= BOZU_PLACE_M).sort((a, b) => a.d - b.d)[0];
+    if (near) place = `${near.c.place_name}付近`;
+  }
+  return `<a class="catch-card bozu" href="#/a/${esc(albumId)}/map?trip=${esc(t.trip_id)}">
+    <div class="catch-thumb"><div class="thumb-empty">${icon('trip')}</div></div>
+    <div class="catch-body">
+      <h3>ボウズ <span class="size">釣行</span></h3>
+      <p class="muted">${esc(place || (p ? '場所名なし（ルートあり）' : '場所の記録なし'))}</p>
+      <p class="muted small">${esc(tripTime(t))}・${esc(memberName(albumId, t.member_id) || '自分')}</p>
+      ${t._unsent ? '<span class="chip">送信待ち</span>' : ''}
+    </div>
+  </a>`;
 }
 
 // ---------- 釣果の新規登録（楽観的更新） ----------
